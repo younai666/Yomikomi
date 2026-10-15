@@ -1,0 +1,4 @@
+<resources>
+    <bool name="tile_supported">false</bool>
+    <bool name="capture_supported">false</bool>
+</resources>

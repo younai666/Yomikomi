@@ -1,3 +1,6 @@
 <resources>
-    <style name="Theme.Yomikomi" parent="android:style/Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Yomikomi" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#181817</item>
+        <item name="android:colorAccent">#D99A7E</item>
+    </style>
 </resources>

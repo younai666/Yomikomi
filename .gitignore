@@ -4,6 +4,8 @@
 **/build/
 .cxx/
 .externalNativeBuild/
+*.gguf
+*.traineddata
 
 # Local SDK and IDE configuration
 local.properties
