@@ -4,6 +4,13 @@
 **/build/
 .cxx/
 .externalNativeBuild/
+
+# Built packages (including copies outside build/)
+*.apk
+*.aab
+*.ap_
+
+# Downloaded model data
 *.gguf
 *.traineddata
 
@@ -11,6 +18,13 @@
 local.properties
 .idea/
 *.iml
+/captures/
+
+# JVM diagnostics and local build logs
+*.hprof
+hs_err_pid*.log
+replay_pid*.log
+/*.log
 
 # Signing credentials
 *.jks
@@ -20,3 +34,4 @@ keystore.properties
 # Operating system files
 .DS_Store
 Thumbs.db
+desktop.ini

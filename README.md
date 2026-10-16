@@ -82,6 +82,14 @@ keyPassword=YOUR_KEY_PASSWORD
 Run `./gradlew assembleRelease`. Signed APK: `app/build/outputs/apk/release/app-release.apk`.
 Without `keystore.properties`, the release APK is unsigned. Keep the key and passwords outside Git and back them up securely; future updates must use the same signing key. Release builds use a different certificate from local debug builds and cannot install over them.
 
+### Repository contents and local cleanup
+
+- Keep `app/src`, the Gradle build files and Wrapper (`gradle/wrapper`, `gradlew`, `gradlew.bat`), `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. Dependency license texts under `app/src/main/assets/licenses` are packaged with the app.
+- `tools/build-update-fixtures.ps1` generates the small signed APKs used by the optional installer tests below; it is test infrastructure, not an app dependency.
+- `keystore.properties` and its referenced signing key are private local release inputs, already ignored by Git. Do not delete them as cache: losing the key prevents publishing compatible updates. Debug builds do not require them.
+- `.gradle/`, `.kotlin/`, `app/.cxx/` and `app/build/` are ignored, generated data. Stop Gradle (`./gradlew --stop`) before removing them. The next build recreates them; deleting `.gradle/native` also requires downloading and recompiling the pinned llama.cpp dependency. None of these directories contains the installed app's private downloaded models.
+- Build verification will recreate caches. They can be removed again afterwards; retain `app/build/outputs/apk`, `app/build/reports` and `app/build/test-results` if APKs and verification reports are still needed.
+
 ## Verification
 
 Unit tests cover ordering, stable/duplicate IDs, one-call page submission, response validation, context isolation/expiry/budget, prompt templates and configuration routing, literal placeholder handling, ordered output parsing, download resumption, ignored/invalid Range responses, interrupted transfers, multi-file completion and checksum rejection.
@@ -112,7 +120,7 @@ The external fixture accepts `--ez dark true` for dark-background OCR/overlay ch
 
 For continuity checks, the fixture also accepts `--es page story1`, `story2` and `unrelated`; `--activity-single-top` updates the same activity. Hide the existing overlay with the tile before each change, then translate again. In runtime logs, `story1 → story2` should record `CONTEXT decision reused=1`; returning from another app or moving to `unrelated` should record `reused=0`. No OCR/translated content is logged by this diagnostic.
 
-The generated launcher artwork and its production prompt are included in [`app/src/main/res/drawable-nodpi/yomikomi_wordmark.png`](app/src/main/res/drawable-nodpi/yomikomi_wordmark.png) and [`docs/launcher-icon-prompt.txt`](docs/launcher-icon-prompt.txt). Android 8+ uses an adaptive icon with lettering inset into the circular safe zone; older versions use the square artwork.
+The launcher artwork is included in [`app/src/main/res/drawable-nodpi/yomikomi_wordmark.png`](app/src/main/res/drawable-nodpi/yomikomi_wordmark.png). Android 8+ uses an adaptive icon with lettering inset into the circular safe zone; older versions use the square artwork.
 
 ## In-app updates
 
