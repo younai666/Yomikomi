@@ -55,6 +55,24 @@ class TranslationPromptsTest {
         assertTrue(prompt.contains("literal {{previous_screen}} {{target_language}}"))
     }
 
+    @Test fun wrappedTextAndUnknownProductNamesAreDataAndTheProtocolDoesNotForbidPreservingThem() {
+        val input = listOf(TranslationSegment("b7", "Тут, похоже, проще сразу переустановить всю"),
+            TranslationSegment("b12", "Нейромиту - даже с полным списком Эмбедингов и Реранкеров..."))
+        val prompt = TranslationPrompts.render(TranslationRequest("俄语", "简体中文", input, null))
+        input.forEach { assertTrue(prompt.contains("[${it.id}] 原文：${it.text}")) }
+        assertTrue(prompt.contains("先连起来理解再逐 ID 翻译"))
+        assertTrue(prompt.contains("俄语变格仍按专名保留"))
+        assertTrue(prompt.contains("不因长度概括、省略"))
+        assertFalse(prompt.contains("不要照抄原文"))
+    }
+
+    @Test fun protocolPreservesLongTextAndItsFinalCharacterWithoutSplittingEmbeddedArrows() {
+        val text = "长正文包含 → 、引号、😀及保留专名Нейромиту。".repeat(400) + "【结尾】"
+        val result = TranslationProtocol.parse("[b7] → $text\r\n[b12] → 完整\r\n", segments)
+        assertEquals(text, result.first().text)
+        assertEquals("完整", result.last().text)
+    }
+
     @Test fun orderedProtocolReturnsTranslationsWithoutLeakingPreviousIds() {
         val result = TranslationProtocol.parse("[b7] → 她是谁？\n[b12] → 她是我们的队长。\n", segments)
         assertEquals(segments.map { it.id }, result.map { it.id })

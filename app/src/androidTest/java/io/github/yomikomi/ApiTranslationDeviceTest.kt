@@ -30,6 +30,30 @@ class ApiTranslationDeviceTest {
     private fun response(text: String, finish: String = "stop") = JSONObject().put("choices", JSONArray().put(
         JSONObject().put("finish_reason", finish).put("message", JSONObject().put("content", text)))).toString()
 
+    @Test fun longResponsesPreserveEveryCharacterAndIdAcrossReadBoundaries() {
+        val long = "人名Нейромиту、否定条件、引号\"与括号{原样}😀，不要省略。".repeat(240) + "【最后一个字】"
+        val conn = FakeConnection(response("[b7] → $long\n[b12] → 完整的第二个ID。"))
+        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        assertEquals(long, result.first().text)
+        assertEquals("完整的第二个ID。", result.last().text)
+        assertEquals(segments.map { it.id }, result.map { it.id })
+        assertEquals(4096, JSONObject(conn.sent.toString("UTF-8")).getInt("max_tokens"))
+    }
+
+    @Test fun tokenLimitAndProtocolFailuresHaveDistinctDiagnosticsAndNeverReturnPartialTranslations() {
+        val body = JSONObject(response("[b7] → 看似完整\n[b12] → 实际被截断", "length"))
+            .put("usage", JSONObject().put("prompt_tokens", 1800).put("completion_tokens", 4096)).toString()
+        val failure = assertThrows(IllegalStateException::class.java) {
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, { FakeConnection(body) }).translate(request())
+        }
+        assertTrue(failure.message.orEmpty().contains("token 上限"))
+        assertTrue(runtimeLogSnapshot().contains("finish=1 prompt_tokens=1800 output_tokens=4096 max_output_tokens=4096"))
+        assertThrows(IllegalArgumentException::class.java) {
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, { FakeConnection(response("[b7] → 缺少第二个ID")) }).translate(request())
+        }
+        assertTrue(runtimeLogSnapshot().contains("API protocol_failed request=0 expected_ids=2 lines=1"))
+    }
+
     @Test fun onePostContainsBothScreensAndEveryPresetAndPreservesIds() {
         PromptMode.entries.forEach { mode ->
             val custom = "背景 {{previous_screen}}\n任务：自然中文\n整屏 {{current_screen}}"
@@ -47,8 +71,11 @@ class ApiTranslationDeviceTest {
             assertFalse(body.getBoolean("stream"))
             assertEquals("disabled", body.getJSONObject("thinking").getString("type"))
             val messages = body.getJSONArray("messages")
-            assertEquals(1, messages.length())
-            val prompt = messages.getJSONObject(0).getString("content")
+            assertEquals(2, messages.length())
+            assertEquals("system", messages.getJSONObject(0).getString("role"))
+            assertTrue(messages.getJSONObject(0).getString("content").contains("不猜成普通词"))
+            assertEquals("user", messages.getJSONObject(1).getString("role"))
+            val prompt = messages.getJSONObject(1).getString("content")
             assertEquals(TranslationPrompts.render(request(config.prompt)), prompt)
             assertTrue(prompt.contains("霜华"))
             assertFalse(prompt.contains("[b99]"))

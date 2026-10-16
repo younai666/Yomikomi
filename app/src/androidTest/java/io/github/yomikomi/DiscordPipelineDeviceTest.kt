@@ -46,6 +46,14 @@ class DiscordPipelineDeviceTest {
                 assertTrue(it, log.contains(it))
             }
             assertFalse(log.substringAfter("API id_map").substringBefore('\n').contains("�"))
+            val selectedLine = log.lineSequence().last { "OCR ocr_selected" in it }
+            val selected = org.json.JSONArray(org.json.JSONObject("{\"value\":" + selectedLine.substringAfter(" text=") + "}").getString("value"))
+            assertFalse("The inline avatar must not become a standalone Cyrillic letter",
+                (0 until selected.length()).any { selected.getJSONObject(it).getString("text") == "Е" })
+            listOf("похоже", "всю", "вниз листаешь").forEach {
+                assertTrue("OCR cleanup must not delete recognized sentence words: $it", selectedLine.contains(it))
+            }
+            assertTrue(log.contains("API completion") && log.contains("finish=0"))
             shell("screencap -p /data/local/tmp/yomikomi-discord-overlay.png")
             instrumentation.runOnMainSync {
                 for (type in listOf(2048, 4096)) {

@@ -75,8 +75,9 @@ class TesseractOcr(private val root: File) {
                             box.right + area.left, box.bottom + area.top))
                     }
                 } while (iterator.next(level))
-                // Revisit the existing OCR iterator (not recognition): small annotations/icons must not
-                // poison an otherwise high-confidence line through its averaged confidence.
+                // The line has already passed confidence checks. Russian x-height can be tiny beside
+                // an avatar/badge, so lexical words must not be deleted by per-word size/confidence gates.
+                // Ambiguous single-letter icon detections still need confidence, without a size gate.
                 val words = mutableMapOf<PixelBounds, MutableList<Pair<String, PixelBounds>>>()
                 if (source == "俄语") {
                     iterator.begin()
@@ -85,7 +86,9 @@ class TesseractOcr(private val root: File) {
                         val wordBox = iterator.getBoundingRect(TessBaseAPI.PageIteratorLevel.RIL_WORD)
                         val lineBox = iterator.getBoundingRect(level)
                         if (wordBox != null && lineBox != null && word.isNotBlank() &&
-                            (Regex("[-—>→!?！？….,:;()]+").matches(word) ||
+                            ((word.count { it in '\u0400'..'\u04ff' }.let { it >= 2 ||
+                                (it == 1 && iterator.confidence(TessBaseAPI.PageIteratorLevel.RIL_WORD) >= 30) }) ||
+                                Regex("[-—>→!?！？….,:;()]+").matches(word) ||
                                 (iterator.confidence(TessBaseAPI.PageIteratorLevel.RIL_WORD) >= 30 &&
                                     wordBox.height() >= lineBox.height() * (if (word.any(Char::isDigit) && word.none(Char::isLetter)) .75f else .4f)))) {
                             val key = PixelBounds(lineBox.left + area.left, lineBox.top + area.top, lineBox.right + area.left, lineBox.bottom + area.top)
@@ -104,9 +107,15 @@ class TesseractOcr(private val root: File) {
                     else {
                         fun line(parts: List<Pair<String, PixelBounds>>) = RecognizedBlock(parts.joinToString(" ") { it.first }, PixelBounds(
                             parts.minOf { it.second.left }, parts.minOf { it.second.top }, parts.maxOf { it.second.right }, parts.maxOf { it.second.bottom }))
-                        val prose = if (source == "俄语" && kept.first().first.startsWith('@'))
-                            kept.indexOfFirst { word -> word.first.count { it in '\u0400'..'\u04ff' } >= 3 } else -1
-                        if (prose > 0) listOf(line(kept.take(prose)), line(kept.drop(prose))) else listOf(line(kept))
+                        val handle = kept.indexOfFirst { it.first.startsWith('@') }
+                        val prose = if (handle >= 0) (handle + 1 until kept.size).firstOrNull { index ->
+                            kept[index].first.count { it in '\u0400'..'\u04ff' } >= 3
+                        } ?: -1 else -1
+                        if (prose > handle && handle >= 0) buildList {
+                            if (handle > 0) add(line(kept.take(handle)))
+                            add(line(kept.subList(handle, prose)))
+                            add(line(kept.drop(prose)))
+                        } else listOf(line(kept))
                     }
                 }
                 if (traceId > 0) {

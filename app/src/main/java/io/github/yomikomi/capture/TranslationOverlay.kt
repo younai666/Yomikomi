@@ -50,12 +50,12 @@ fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, 
     screen.translations.values.forEach(TranslationProtocol::validateText)
     // Adjacent lines of the same size/column form a paragraph, while their ID mapping remains intact.
     val groups = mutableListOf<MutableList<ScreenBlock>>()
-    fun metadata(text: String) = (Regex("\\b\\d{1,2}:\\d{2}\\b").containsMatchIn(text) && text.split(' ').size <= 4) ||
-        (text.startsWith('@') && text.substringAfter(' ', "").none { it in '\u0400'..'\u04ff' })
+    fun metadata(text: String) = Regex("(?:\\S+\\s+)?\\d{1,2}:\\d{2}").matches(text) ||
+        (text.startsWith('@') && text.split(' ').drop(1).all { Regex("[\\p{Lu}\\d%\\p{So}]{1,6}").matches(it) })
     for (block in screen.blocks.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))) {
         val b = block.bounds
         if (metadata(block.text)) { groups.add(mutableListOf(block)); continue }
-        val paragraph = groups.lastOrNull { it.none { line -> metadata(line.text) } }
+        val paragraph = groups.lastOrNull()?.takeIf { it.none { line -> metadata(line.text) } }
         val prior = paragraph?.lastOrNull()?.bounds
         if (prior != null && b.top >= prior.bottom && b.top - prior.bottom <= maxOf(prior.height, b.height) * .9f &&
             minOf(prior.right, b.right) - maxOf(prior.left, b.left) >= minOf(prior.width, b.width) * .6f &&
@@ -65,19 +65,20 @@ fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, 
     }
     fun bounds(group: List<ScreenBlock>) = PixelBounds(group.minOf { it.bounds.left }, group.minOf { it.bounds.top },
         group.maxOf { it.bounds.right }, group.maxOf { it.bounds.bottom })
+    val placed = mutableListOf<PixelBounds>()
     return groups.mapNotNull { group ->
-        if (group.all { metadata(it.text) }) return@mapNotNull null
         if (screen.sourceLanguage == "俄语" && group.all { '#' in it.text && it.text.count { c -> c in '\u0400'..'\u04ff' } < 3 })
             return@mapNotNull null // A channel/input identifier is already readable; do not paint OCR guesses over it.
         if (group.all { screen.translations.getValue(it.id).trim() == it.text.trim() }) return@mapNotNull null
         val source = bounds(group)
-        val others = groups.filter { it !== group }.map(::bounds)
+        val others = groups.filter { it !== group }.map(::bounds) + placed
         val right = minOf(viewport.right, others.filter { it.top < source.bottom && it.bottom > source.top && it.left >= source.right }
             .minOfOrNull { it.left - 6 } ?: viewport.right)
         val bottom = minOf(viewport.bottom, others.filter { it.left < right && it.right > source.left && it.top >= source.bottom }
             .minOfOrNull { it.top - 4 } ?: viewport.bottom)
         val width = maxOf(source.width, right - source.left)
-        val height = maxOf(source.height, bottom - source.top)
+        val above = maxOf(viewport.top, others.filter { it.left < right && it.right > source.left && it.bottom <= source.top }
+            .maxOfOrNull { it.bottom + 4 } ?: viewport.top).coerceAtMost(source.top)
         val color = backgrounds.getValue(group.first().bounds)
         val text = group.joinToString(" ") { screen.translations.getValue(it.id) }
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -85,21 +86,67 @@ fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, 
                 Color.rgb(240, 238, 233) else Color.rgb(28, 28, 27)
             this.textSize = textSize
         }
-        fun layout() = StaticLayout.Builder.obtain(text, 0, text.length, paint,
-            minOf(width, maxOf(source.width, kotlin.math.ceil(Layout.getDesiredWidth(text, paint).toDouble()).toInt())))
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1f)
-            .setIndents(intArrayOf(group.first().bounds.left - source.left, 0), null).build()
+        fun layout(top: Int): StaticLayout {
+            val layoutWidth = minOf(width, maxOf(source.width, kotlin.math.ceil(Layout.getDesiredWidth(text, paint).toDouble()).toInt()))
+            fun build(left: IntArray?, right: IntArray?) = StaticLayout.Builder.obtain(text, 0, text.length, paint, layoutWidth)
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(true).setLineSpacing(0f, 1f)
+                .setIndents(left, right).build()
+            var candidate = build(null, null)
+            // Use actual font/fallback line metrics, then wrap around inline names and other obstacles.
+            repeat(2) {
+                val left = IntArray(candidate.lineCount + 2)
+                val right = IntArray(left.size)
+                for (line in left.indices) {
+                    val known = minOf(line, candidate.lineCount - 1)
+                    val offset = (line - known) * paint.fontSpacing.toInt()
+                    val rowTop = top + candidate.getLineTop(known) + offset
+                    val rowBottom = top + candidate.getLineBottom(known) + offset
+                    if (top == source.top && line == 0) left[line] = group.first().bounds.left - source.left
+                    for (obstacle in others) if (obstacle.top < rowBottom && obstacle.bottom > rowTop &&
+                        obstacle.left < source.left + layoutWidth && obstacle.right > source.left) {
+                        if (obstacle.left + obstacle.right < source.left * 2 + layoutWidth)
+                            left[line] = maxOf(left[line], obstacle.right + 6 - source.left)
+                        else right[line] = maxOf(right[line], source.left + layoutWidth - obstacle.left + 6)
+                    }
+                    // Leave a valid builder width; an impossible row is rejected by the collision check below.
+                    left[line] = left[line].coerceIn(0, layoutWidth - 1)
+                    right[line] = right[line].coerceIn(0, layoutWidth - left[line] - 1)
+                }
+                candidate = build(left, right)
+            }
+            return candidate
+        }
         var result: StaticLayout? = null
-        for (scale in listOf(1f, .95f, .9f)) {
-            paint.textSize = textSize * scale
-            val candidate = layout()
-            if (candidate.height <= height) { result = candidate; break }
+        var renderTop = source.top
+        for (top in listOf(source.top, above).distinct()) {
+            for (scale in listOf(1f, .95f, .9f)) {
+                paint.textSize = textSize * scale
+                val candidate = layout(top)
+                if (candidate.height <= bottom - top && candidate.getLineEnd(candidate.lineCount - 1) == text.length &&
+                    (0 until candidate.lineCount).all { line ->
+                        val left = source.left + candidate.getPrimaryHorizontal(candidate.getLineStart(line))
+                        val right = source.left + candidate.getLineRight(line)
+                        left >= source.left && right <= source.left + candidate.width + .5f && others.none {
+                            it.left < right && it.right > left && it.top < top + candidate.getLineBottom(line) && it.bottom > top + candidate.getLineTop(line)
+                        }
+                    }) {
+                    result = candidate; renderTop = top; break
+                }
+            }
+            if (result != null) break
         }
         if (result == null) {
-            RunLog.warn(LogModule.OVERLAY, "layout_unfit", null, "ids" to group.size)
+            RunLog.warn(LogModule.OVERLAY, "layout_unfit", null, "ids" to group.size,
+                "first_id" to group.first().id.removePrefix("b").toLong(), "characters" to text.length)
             null // Keep the original readable text rather than shrinking to illegible pixels or clipping a translation.
-        } else OverlayBlock(PixelBounds(source.left, source.top, source.left + result.width,
-            source.top + maxOf(source.height, result.height)), color, result, source, group.map { it.id }, group.map { it.bounds })
+        } else {
+            val renderedBounds = PixelBounds(source.left, renderTop, source.left + result.width, maxOf(source.bottom, renderTop + result.height))
+            placed += renderedBounds
+            RunLog.info(LogModule.OVERLAY, "layout_block", "first_id" to group.first().id.removePrefix("b").toLong(),
+                "ids" to group.size, "characters" to text.length, "layout_end" to result.getLineEnd(result.lineCount - 1),
+                "lines" to result.lineCount, "top_shift_px" to (source.top - renderTop), "font_px" to result.paint.textSize)
+            OverlayBlock(renderedBounds, color, result, source, group.map { it.id }, group.map { it.bounds })
+        }
     }.also { rendered ->
         RunLog.info(LogModule.OVERLAY, "layout", "source_blocks" to screen.blocks.size, "paragraphs" to rendered.size,
             "rendered_ids" to rendered.sumOf { it.ids.size }, "base_px" to textSize,
@@ -157,7 +204,7 @@ class TranslationOverlay(private val context: Context) {
                 background.alpha = opacity
                 block.sourceMasks.forEach { mask -> canvas.drawRect(mask.left - 2f, mask.top - 2f, mask.right + 2f, mask.bottom + 2f, background) }
                 for (line in 0 until block.layout.lineCount) canvas.drawRect(
-                    b.left + maxOf(block.layout.getLineLeft(line), if (line == 0) (block.sourceMasks.first().left - b.left).toFloat() else 0f) - 2f,
+                    b.left + block.layout.getPrimaryHorizontal(block.layout.getLineStart(line)) - 2f,
                     b.top + block.layout.getLineTop(line) - 1f,
                     b.left + block.layout.getLineRight(line) + 2f, b.top + block.layout.getLineBottom(line) + 1f, background)
                 canvas.save()
