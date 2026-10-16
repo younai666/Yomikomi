@@ -24,7 +24,6 @@ import io.github.yomikomi.models.ModelDownloadService
 import io.github.yomikomi.models.ModelSpec
 import io.github.yomikomi.translation.PromptMode
 import io.github.yomikomi.translation.PromptSettings
-import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color

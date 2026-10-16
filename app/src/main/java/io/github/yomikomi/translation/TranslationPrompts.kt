@@ -86,6 +86,8 @@ object TranslationPrompts {
 
 /** Ordered [ID] → text protocol shared by every preset and custom mode. */
 object TranslationProtocol {
+    private val embeddedMarker = Regex("(?:\\[b\\d+\\]|</?b\\d+>)\\s*→")
+
     fun grammar(segments: List<TranslationSegment>): String {
         val lines = segments.joinToString(" \"\\n\" ") { "\"[${it.id}] → \" text" }
         return "root ::= $lines\ntext ::= [^\\r\\n]+"
@@ -99,7 +101,7 @@ object TranslationProtocol {
             require(lines[index].startsWith(prefix)) { "译文 ID 或顺序不匹配" }
             val text = lines[index].removePrefix(prefix).trim()
             require(text.isNotEmpty()) { "译文不能为空" }
-            require(!Regex("(?:\\[b\\d+\\]|</?b\\d+>)\\s*→").containsMatchIn(text)) { "译文混入了额外的 ID 标记" }
+            require(!embeddedMarker.containsMatchIn(text)) { "译文混入了额外的 ID 标记" }
             TranslationSegment(segment.id, text)
         }
     }

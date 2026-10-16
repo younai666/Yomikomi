@@ -2,6 +2,8 @@
 
 Native Android screen translation in Kotlin and Jetpack Compose, with a warm, dark-only interface.
 
+Download the signed APK from [GitHub Releases](https://github.com/younai666/Yomikomi/releases).
+
 ## First run
 
 1. Open a model on Home, or **Settings → 翻译设置 → 本地模型**.
@@ -67,6 +69,18 @@ adb shell am start -n io.github.yomikomi/.MainActivity
 ```
 
 Use `./gradlew` on macOS/Linux. APK: `app/build/outputs/apk/debug/app-debug.apk`.
+
+For a signed release, create an untracked `keystore.properties` at the project root with your own signing key:
+
+```properties
+storeFile=/absolute/path/to/yomikomi-release.jks
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=yomikomi
+keyPassword=YOUR_KEY_PASSWORD
+```
+
+Run `./gradlew assembleRelease`. Signed APK: `app/build/outputs/apk/release/app-release.apk`.
+Without `keystore.properties`, the release APK is unsigned. Keep the key and passwords outside Git and back them up securely; future updates must use the same signing key. Release builds use a different certificate from local debug builds and cannot install over them.
 
 ## Verification
 

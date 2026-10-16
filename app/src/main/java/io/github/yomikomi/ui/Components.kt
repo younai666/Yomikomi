@@ -81,7 +81,6 @@ internal fun QuietIconButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    filled: Boolean = false,
     enabled: Boolean = true,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -97,22 +96,14 @@ internal fun QuietIconButton(
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(if (filled) 38.dp else 48.dp)
-            .clip(CircleShape).background(if (filled) yomiColors.surfaceLow else Color.Transparent)
-            .border(0.5.dp, if (filled) yomiColors.line else Color.Transparent, CircleShape),
-            contentAlignment = Alignment.Center) {
-            LineIcon(glyph, Modifier.size(20.dp))
-        }
+        LineIcon(glyph, Modifier.size(20.dp))
     }
 }
 
 @Composable
-internal fun SectionLabel(text: String, modifier: Modifier = Modifier, end: @Composable RowScope.() -> Unit = {}) {
-    Row(modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(text, color = yomiColors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f))
-        end()
-    }
+internal fun SectionLabel(text: String) {
+    Text(text, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        color = yomiColors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
 }
 
 @Composable

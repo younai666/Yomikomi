@@ -1,7 +1,13 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val releaseKey = rootProject.file("keystore.properties").takeIf { it.isFile }?.inputStream()?.use { input ->
+    Properties().apply { load(input) }
 }
 
 android {
@@ -21,6 +27,20 @@ android {
         externalNativeBuild {
             cmake { arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON") }
         }
+    }
+
+    signingConfigs {
+        releaseKey?.let { key ->
+            create("release") {
+                storeFile = rootProject.file(key.getProperty("storeFile"))
+                storePassword = key.getProperty("storePassword")
+                keyAlias = key.getProperty("keyAlias")
+                keyPassword = key.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release { signingConfig = signingConfigs.findByName("release") }
     }
 
     compileOptions {

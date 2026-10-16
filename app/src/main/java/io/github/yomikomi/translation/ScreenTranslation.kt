@@ -67,7 +67,7 @@ class ScreenTranslator(private val engine: TranslationEngine) {
             val requestVersion = ++version
             val unmatched = previous?.blocks?.toMutableList() ?: mutableListOf()
             val blocks = valid.map { block ->
-                val match = unmatched.filter { it.text.trim() == block.text.trim() }
+                val match = unmatched.asSequence().filter { it.text.trim() == block.text.trim() }
                     .minByOrNull { distance(it.bounds, block.bounds) }
                     ?.takeIf { distance(it.bounds, block.bounds) <= 48 }
                 if (match != null) unmatched.remove(match)
@@ -92,11 +92,12 @@ class ScreenTranslator(private val engine: TranslationEngine) {
         val request = TranslationRequest(source, target, draft.blocks.map { TranslationSegment(it.id, it.text) }, context, prompt)
         // Slow model/network work must not hold the cache lock: app/config invalidations are immediate.
         val result = engine.translate(request)
-        require(result.size == draft.blocks.size && result.map { it.id }.toSet() == draft.blocks.map { it.id }.toSet()) {
+        val translations = result.associate { it.id to it.text }
+        require(result.size == draft.blocks.size && translations.keys == draft.blocks.map { it.id }.toSet()) {
             "Translation response must contain each requested ID exactly once"
         }
         require(result.all { it.text.isNotBlank() }) { "Translation response contains empty text" }
-        return draft.copy(translations = result.associate { it.id to it.text })
+        return draft.copy(translations = translations)
     }
 
     /** Only displayed screens become context; canceled/failed requests never replace it. */
