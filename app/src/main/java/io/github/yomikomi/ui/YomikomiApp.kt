@@ -45,6 +45,7 @@ internal class UiState(config: RuntimeSettings) {
     var autoCollapse by mutableStateOf(config.autoCollapse)
     var promptMode by mutableStateOf(config.prompt.mode)
     var customPrompt by mutableStateOf(config.prompt.customTemplate)
+    var gpuAcceleration by mutableStateOf(config.gpuAcceleration)
 }
 
 internal enum class Panel { Source, Target, Ocr, Translation, Tile, Service, Api, Models, Prompts, CustomPrompt, ApiPrompts, ApiCustomPrompt }
@@ -53,9 +54,9 @@ internal enum class Panel { Source, Target, Ocr, Translation, Tile, Service, Api
 fun YomikomiApp() {
     val context = LocalContext.current
     val state = remember { UiState(RuntimeSettings.read(context)) }
-    LaunchedEffect(state.source, state.target, state.opacity, state.textSize, state.autoCollapse, state.promptMode, state.customPrompt, state.api) {
+    LaunchedEffect(state.source, state.target, state.opacity, state.textSize, state.autoCollapse, state.promptMode, state.customPrompt, state.api, state.gpuAcceleration) {
         RuntimeSettings(state.source, state.target, state.opacity, state.textSize, state.autoCollapse,
-            PromptSettings(state.promptMode, state.customPrompt), state.api).save(context)
+            PromptSettings(state.promptMode, state.customPrompt), state.api, state.gpuAcceleration).save(context)
     }
     var page by rememberSaveable { mutableIntStateOf(0) }
     var panel by rememberSaveable { mutableStateOf<Panel?>(null) }

@@ -13,6 +13,7 @@ data class RuntimeSettings(
     val source: String, val target: String, val opacity: Float, val textSize: Int, val autoCollapse: Boolean,
     val prompt: PromptSettings = PromptSettings(),
     val api: ApiSettings = ApiSettings(),
+    val gpuAcceleration: Boolean = false,
 ) {
     val contextConfig get() = ContextConfig(source, target, if (api.enabled) api.prompt else prompt,
         if (api.enabled) "api:${api.provider.key}:${api.endpoint}:${api.model}" else "local")
@@ -28,7 +29,8 @@ data class RuntimeSettings(
                     prefs.getString("apiEndpoint", "https://api.deepseek.com")!!,
                     prefs.getString("apiModel", "deepseek-flash")!!,
                     PromptSettings(PromptMode.entries.firstOrNull { it.key == prefs.getString("apiPromptMode", null) } ?: PromptMode.General,
-                        prefs.getString("apiCustomPrompt", "").orEmpty())))
+                        prefs.getString("apiCustomPrompt", "").orEmpty())),
+                prefs.getBoolean("gpuAcceleration", false))
         }
     }
     fun save(context: Context) {
@@ -38,6 +40,7 @@ data class RuntimeSettings(
             .putString("promptMode", prompt.mode.key).putString("customPrompt", prompt.customTemplate)
             .putBoolean("apiEnabled", api.enabled).putString("apiProvider", api.provider.key)
             .putString("apiEndpoint", api.endpoint).putString("apiModel", api.model)
-            .putString("apiPromptMode", api.prompt.mode.key).putString("apiCustomPrompt", api.prompt.customTemplate).apply()
+            .putString("apiPromptMode", api.prompt.mode.key).putString("apiCustomPrompt", api.prompt.customTemplate)
+            .putBoolean("gpuAcceleration", gpuAcceleration).apply()
     }
 }

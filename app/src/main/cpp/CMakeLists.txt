@@ -25,11 +25,54 @@ endif()
 include(FetchContent)
 # Pinned dependencies are kept outside version control. No StarFlow code is used.
 set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../.gradle/native/${ANDROID_ABI}")
+set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(SPIRV_HEADERS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(SPIRV_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(vulkan_headers
+    URL https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/vulkan-sdk-1.4.335.0
+    URL_HASH SHA256=269e95cc5138ea0a0d52fcb0ee19102add2560fedf5a43b1b5c17780c2775764)
+FetchContent_Declare(spirv_headers
+    URL https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/refs/tags/vulkan-sdk-1.4.335.0
+    URL_HASH SHA256=1c47ca6342ebe86f57b46b8dbeb266fa655a1ca8e10d07e45370ff2d9c36312e)
+FetchContent_MakeAvailable(vulkan_headers spirv_headers)
+set(Vulkan_INCLUDE_DIR "${vulkan_headers_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+if (ANDROID_ABI STREQUAL "arm64-v8a")
+    set(yomi_vulkan_triple aarch64-linux-android)
+elseif (ANDROID_ABI STREQUAL "x86_64")
+    set(yomi_vulkan_triple x86_64-linux-android)
+endif()
+# FindVulkan needs a loader stub even though our lazy loader does not link to it.
+find_library(Vulkan_LIBRARY vulkan PATHS "${CMAKE_SYSROOT}/usr/lib/${yomi_vulkan_triple}/24" NO_DEFAULT_PATH REQUIRED)
+# The upstream find_package also runs when its headers are supplied by FetchContent.
+file(WRITE "${spirv_headers_BINARY_DIR}/SPIRV-HeadersConfig.cmake" "set(SPIRV-Headers_FOUND TRUE)\n")
+set(SPIRV-Headers_DIR "${spirv_headers_BINARY_DIR}" CACHE PATH "" FORCE)
+if (NOT Vulkan_GLSLC_EXECUTABLE)
+    if (CMAKE_HOST_WIN32)
+        set(yomi_shader_host windows-x86_64)
+    elseif (CMAKE_HOST_APPLE)
+        set(yomi_shader_host darwin-x86_64)
+    else()
+        set(yomi_shader_host linux-x86_64)
+    endif()
+    find_program(Vulkan_GLSLC_EXECUTABLE glslc
+        HINTS "${ANDROID_NDK}/shader-tools/${yomi_shader_host}" "$ENV{VULKAN_SDK}/Bin"
+        NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+endif()
 FetchContent_Declare(llama
     URL https://codeload.github.com/ggml-org/llama.cpp/tar.gz/620d2225cc436ab0b001e3200e590e3b286ef9ab
     URL_HASH SHA256=1d4a987d9bd048f6e93107e838026438df70fbde237fc0c69c63d600512b4bd9)
 FetchContent_MakeAvailable(llama)
-add_library(yomikomi SHARED inference.cpp)
+target_link_libraries(ggml-vulkan PRIVATE SPIRV-Headers::SPIRV-Headers)
+target_compile_options(ggml-vulkan PRIVATE -include "${CMAKE_CURRENT_LIST_DIR}/android_vulkan_compat.h")
+# Load the system Vulkan loader lazily, so CPU mode still works without libvulkan.so (API 23).
+get_target_property(vulkan_links ggml-vulkan LINK_LIBRARIES)
+list(REMOVE_ITEM vulkan_links Vulkan::Vulkan)
+set_target_properties(ggml-vulkan PROPERTIES LINK_LIBRARIES "${vulkan_links}")
+target_link_libraries(ggml-vulkan PRIVATE Vulkan::Headers)
+add_library(yomikomi SHARED inference.cpp vulkan_loader.cpp)
+target_link_libraries(yomikomi PRIVATE Vulkan::Headers)
 target_compile_options(yomikomi PRIVATE -O3)
-target_link_libraries(yomikomi PRIVATE llama android log)
+target_link_libraries(yomikomi PRIVATE llama android log dl)
 target_link_options(yomikomi PRIVATE "-Wl,-z,max-page-size=16384")

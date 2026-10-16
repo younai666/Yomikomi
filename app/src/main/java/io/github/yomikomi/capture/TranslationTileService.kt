@@ -16,6 +16,14 @@ import io.github.yomikomi.logging.RunLog
 
 @RequiresApi(24)
 class TranslationTileService : TileService() {
+    override fun onStopListening() {
+        RunLog.info(LogModule.ACTION, "tile_stop_listening")
+        super.onStopListening() // The accessibility service and application worker own the request.
+    }
+    override fun onDestroy() {
+        RunLog.info(LogModule.ACTION, "tile_destroyed")
+        super.onDestroy()
+    }
     override fun onTileAdded() { rememberAdded(true) }
     override fun onTileRemoved() { rememberAdded(false) }
     private fun rememberAdded(value: Boolean) {

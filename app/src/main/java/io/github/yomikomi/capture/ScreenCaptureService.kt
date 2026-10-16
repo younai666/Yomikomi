@@ -2,8 +2,11 @@ package io.github.yomikomi.capture
 
 import android.accessibilityservice.AccessibilityService
 import android.content.SharedPreferences
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.hardware.display.DisplayManager
 import android.os.SystemClock
 import android.view.Display
 import android.view.WindowInsets
@@ -22,6 +25,7 @@ import io.github.yomikomi.translation.ApiSecretStore
 import io.github.yomikomi.translation.ContextConfig
 import io.github.yomikomi.translation.ContextReset
 import io.github.yomikomi.translation.RecognizedBlock
+import io.github.yomikomi.translation.TranslatedScreen
 import io.github.yomikomi.translation.ScreenAppearance
 import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.logging.LogModule
@@ -40,23 +44,34 @@ class ScreenCaptureService : AccessibilityService() {
     private var busy = false
     private var waitingForShade = false
     private var startedAt = 0L
+    private var stage = 0 // 0 idle, 1 shade, 2 capture, 3 OCR, 4 model, 5 inference, 6 validation, 7 overlay.
+    private var lastActivity: ComponentName? = null
+    private var deferredEvents = 0
+    private lateinit var displayBounds: Rect
+    private var displayRotation = 0
     private var settings: RuntimeSettings? = null
     private lateinit var preferences: SharedPreferences
     private lateinit var observedConfig: ContextConfig
+    private var observedGpuAcceleration = false
     private val configurationListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        val updated = RuntimeSettings.read(this).contextConfig
-        if (!observedConfig.matches(updated)) {
-            cancel()
+        val updatedSettings = RuntimeSettings.read(this)
+        val updated = updatedSettings.contextConfig
+        if (!observedConfig.matches(updated) || observedGpuAcceleration != updatedSettings.gpuAcceleration) {
+            cancel(CaptureCancelReason.CONFIG_CHANGED)
             translator.configure(updated)
         }
         observedConfig = updated
+        observedGpuAcceleration = updatedSettings.gpuAcceleration
     }
 
     override fun onCreate() {
         super.onCreate()
         overlay = TranslationOverlay(this)
+        displayBounds = Rect(getSystemService(WindowManager::class.java).currentWindowMetrics.bounds)
+        displayRotation = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY).rotation
         preferences = getSharedPreferences("settings", MODE_PRIVATE)
         observedConfig = RuntimeSettings.read(this).contextConfig
+        observedGpuAcceleration = RuntimeSettings.read(this).gpuAcceleration
         translator.configure(observedConfig)
         preferences.registerOnSharedPreferenceChangeListener(configurationListener)
     }
@@ -71,7 +86,7 @@ class ScreenCaptureService : AccessibilityService() {
     fun toggle() {
         RunLog.info(LogModule.ACTION, "tile_toggle", "busy" to if (busy) 1 else 0, "overlay" to if (overlay.visible) 1 else 0)
         if (busy || overlay.visible) {
-            cancel()
+            cancel(CaptureCancelReason.TILE)
             dismissShade()
             return
         }
@@ -85,6 +100,8 @@ class ScreenCaptureService : AccessibilityService() {
         settings = config
         busy = true
         waitingForShade = true
+        stage = 1
+        deferredEvents = 0
         AppRuntime.pipelinePhase = "截屏中"
         TranslationTileService.refresh(this)
         val token = generation.incrementAndGet()
@@ -103,6 +120,7 @@ class ScreenCaptureService : AccessibilityService() {
     }
 
     private fun capture(token: Long, config: RuntimeSettings, scope: String) {
+        stage = 2
         val screenshotStart = System.nanoTime()
         val contextConfig = config.contextConfig
         val metrics = getSystemService(WindowManager::class.java).currentWindowMetrics
@@ -123,6 +141,7 @@ class ScreenCaptureService : AccessibilityService() {
                         } finally { buffer.close() }
                         val blocks: List<RecognizedBlock>
                         val appearance: ScreenAppearance
+                        val fingerprint: ScreenshotFingerprint
                         val backgrounds: Map<PixelBounds, Int>
                         try {
                             RunLog.info(LogModule.CAPTURE, "screenshot", "request" to token,
@@ -130,41 +149,32 @@ class ScreenCaptureService : AccessibilityService() {
                             if (token != generation.get()) return@execute
                             check(bitmap.width == bounds.width() && bitmap.height == bounds.height()) { "屏幕方向已变化，请重试" }
                             AppRuntime.ensureLoaded(ModelCatalog.ocr, config.source)
-                            phase(token, "识别中")
+                            phase(token, "识别中", 3)
                             blocks = AppRuntime.ocr.recognize(bitmap, config.source, area)
                             if (blocks.isEmpty()) translator.clear(ContextReset.EMPTY)
                             check(blocks.isNotEmpty()) { "未识别到文字" }
                             appearance = screenAppearance(bitmap, area, blocks)
                             backgrounds = overlayBackgrounds(bitmap, blocks)
+                            fingerprint = ScreenshotFingerprint.sample(PixelBounds(area.left, area.top, area.right, area.bottom), bitmap::getPixel)
                         } finally { bitmap.recycle() }
                         // Keep only text, bounds and sampled colors during model loading/network inference.
                         if (token != generation.get()) return@execute
-                        if (!config.api.enabled) AppRuntime.ensureLoaded(ModelCatalog.translation)
+                        if (!config.api.enabled) {
+                            phase(token, "加载模型中", 4)
+                            AppRuntime.ensureLoaded(ModelCatalog.translation, gpuAcceleration = config.gpuAcceleration)
+                        }
                         if (token != generation.get()) return@execute
                         activeEngine = if (config.api.enabled) ApiTranslationEngine(config.api, { ApiSecretStore(this@ScreenCaptureService).read(config.api.endpoint) })
                             else HyMtTranslationEngine()
                         if (token != generation.get()) return@execute
-                        phase(token, "翻译中")
+                        phase(token, "翻译中", 5)
                         val screen = translator.translate(blocks, config.source, config.target, scope, capturedAt,
                             contextConfig.prompt, appearance, contextConfig.backend)
                         val render = RunLog.measure(LogModule.OVERLAY, "prepare", "request" to token) {
                             overlayBlocks(screen, backgrounds, config.textSize * resources.displayMetrics.scaledDensity)
                         }
-                        AppRuntime.main.post {
-                            if (token == generation.get()) {
-                                try {
-                                    overlay.show(render, config)
-                                    translator.accept(screen, scope, SystemClock.elapsedRealtime())
-                                    AppRuntime.main.removeCallbacks(expireContext)
-                                    AppRuntime.main.postDelayed(expireContext, ScreenTranslator.CONTEXT_TTL_MS)
-                                    busy = false
-                                    AppRuntime.pipelinePhase = "已覆盖"
-                                    RunLog.info(LogModule.CAPTURE, "completed", "request" to token, "blocks" to screen.blocks.size,
-                                        "context" to if (screen.contextUsed) 1 else 0, "elapsed_ms" to RunLog.elapsed(startedAt))
-                                    TranslationTileService.refresh(this@ScreenCaptureService)
-                                } catch (error: Exception) { finishFailure(token, error.message ?: "覆盖失败", error) }
-                            }
-                        }
+                        AppRuntime.main.post { if (token == generation.get()) validateScreen(token, config, scope,
+                            bounds, fingerprint, screen, render) }
                     } catch (error: Exception) { AppRuntime.main.post { finishFailure(token, error.message ?: "翻译失败", error) } }
                     finally { activeEngine = null }
                 }
@@ -184,19 +194,78 @@ class ScreenCaptureService : AccessibilityService() {
         }
     }
 
-    private fun phase(token: Long, text: String) { AppRuntime.main.post {
-        if (token == generation.get()) { AppRuntime.pipelinePhase = text; TranslationTileService.refresh(this) }
+    private fun phase(token: Long, text: String, currentStage: Int) { AppRuntime.main.post {
+        if (token == generation.get()) { stage = currentStage; AppRuntime.pipelinePhase = text; TranslationTileService.refresh(this) }
     } }
+
+    private fun validateScreen(token: Long, config: RuntimeSettings, scope: String, bounds: Rect,
+        fingerprint: ScreenshotFingerprint, screen: TranslatedScreen, render: List<OverlayBlock>) {
+        stage = 6
+        AppRuntime.pipelinePhase = "核对页面中"
+        TranslationTileService.refresh(this)
+        val started = System.nanoTime()
+        try { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(result: ScreenshotResult) {
+                val buffer = result.hardwareBuffer
+                AppRuntime.worker.execute {
+                    try {
+                        val bitmap = try {
+                            if (token != generation.get()) return@execute
+                            val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("截屏缓冲区不可读")
+                            try { hardware.copy(Bitmap.Config.ARGB_8888, false) ?: error("截屏转换失败") }
+                            finally { hardware.recycle() }
+                        } finally { buffer.close() }
+                        val change = try {
+                            if (bitmap.width != bounds.width() || bitmap.height != bounds.height())
+                                ScreenshotFingerprint.Change(0, 0, 0, true)
+                            else fingerprint.compare(ScreenshotFingerprint.sample(fingerprint.viewport, bitmap::getPixel))
+                        } finally { bitmap.recycle() }
+                        AppRuntime.main.post {
+                            if (token != generation.get()) return@post
+                            RunLog.info(LogModule.CAPTURE, "validation", "request" to token,
+                                "unchanged" to if (change.changed) 0 else 1, "changed_cells" to change.changedCells,
+                                "changed_rows" to change.changedRows, "total_cells" to change.totalCells, "deferred_events" to deferredEvents,
+                                "elapsed_ms" to RunLog.elapsed(started))
+                            if (change.changed) {
+                                cancel(CaptureCancelReason.PAGE_CHANGED)
+                                translator.clear(ContextReset.MANUAL)
+                                message("页面已变化，请重新点按磁贴")
+                            } else try {
+                                stage = 7
+                                overlay.show(render, config)
+                                translator.accept(screen, scope, SystemClock.elapsedRealtime())
+                                AppRuntime.main.removeCallbacks(expireContext)
+                                AppRuntime.main.postDelayed(expireContext, ScreenTranslator.CONTEXT_TTL_MS)
+                                busy = false
+                                AppRuntime.pipelinePhase = "已覆盖"
+                                RunLog.info(LogModule.CAPTURE, "completed", "request" to token, "blocks" to screen.blocks.size,
+                                    "context" to if (screen.contextUsed) 1 else 0, "elapsed_ms" to RunLog.elapsed(startedAt))
+                                TranslationTileService.refresh(this@ScreenCaptureService)
+                            } catch (error: Exception) { finishFailure(token, error.message ?: "覆盖失败", error) }
+                        }
+                    } catch (error: Exception) { AppRuntime.main.post { finishFailure(token, "无法核对当前页面，请重试", error) } }
+                }
+            }
+            override fun onFailure(errorCode: Int) {
+                RunLog.warn(LogModule.CAPTURE, "validation_failed", null, "request" to token, "code" to errorCode)
+                finishFailure(token, "无法核对当前页面，请重试")
+            }
+        }) } catch (error: SecurityException) { finishFailure(token, "截屏权限已失效，请重新启用服务", error) }
+    }
 
     private fun dismissShade() = if (android.os.Build.VERSION.SDK_INT >= 31)
         performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) else performGlobalAction(GLOBAL_ACTION_BACK)
 
     private fun finishFailure(token: Long, error: String, cause: Throwable? = null) {
-        RunLog.warn(LogModule.CAPTURE, "failed", cause, "request" to token, "elapsed_ms" to RunLog.elapsed(startedAt),
-            "stale" to if (token == generation.get()) 0 else 1)
-        if (token != generation.get()) return
+        if (token != generation.get()) {
+            RunLog.info(LogModule.CAPTURE, "stale_result_discarded", "request" to token)
+            return
+        }
+        RunLog.warn(LogModule.CAPTURE, "failed", cause, "request" to token, "stage" to stage,
+            "elapsed_ms" to RunLog.elapsed(startedAt))
         busy = false
         waitingForShade = false
+        stage = 0
         AppRuntime.pipelinePhase = "就绪"
         message(error)
         TranslationTileService.refresh(this)
@@ -206,19 +275,21 @@ class ScreenCaptureService : AccessibilityService() {
 
     // Overlay window events use our package too; the activity lifecycle distinguishes opening the app.
     fun onAppForegrounded() {
-        cancel()
+        cancel(CaptureCancelReason.APP_FOREGROUND)
         translator.clear(ContextReset.FOREGROUND)
         targetPackage = packageName
         targetWindowId = -1
     }
 
-    private fun cancel() {
-        if (busy || overlay.visible) RunLog.info(LogModule.CAPTURE, "cancelled", "request" to generation.get(),
-            "elapsed_ms" to RunLog.elapsed(startedAt))
+    private fun cancel(reason: CaptureCancelReason, event: AccessibilityEvent? = null) {
+        if (busy || overlay.visible) RunLog.info(LogModule.CAPTURE, "cancelled.${reason.key}", "request" to generation.get(),
+            "stage" to stage, "event_type" to (event?.eventType ?: 0), "window" to (event?.windowId ?: -1),
+            "change_types" to (event?.contentChangeTypes ?: 0), "elapsed_ms" to RunLog.elapsed(startedAt))
         generation.incrementAndGet()
         activeEngine?.cancel()
         busy = false
         waitingForShade = false
+        stage = 0
         overlay.hide()
         AppRuntime.pipelinePhase = "就绪"
         TranslationTileService.refresh(this)
@@ -228,32 +299,62 @@ class ScreenCaptureService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString().orEmpty()
         if (pkg.isEmpty() || pkg == packageName || pkg == "com.android.systemui") return
-        val windowChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.windowId != targetWindowId
-        val switched = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && targetPackage.isNotEmpty() && pkg != targetPackage
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+        val activityWindow = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isActivityWindow(pkg, event)
+        val reason = windowCancellation(targetPackage, targetWindowId, pkg, event.windowId, activityWindow, busy)
+        if (activityWindow) {
             targetPackage = pkg
             targetWindowId = event.windowId
         }
         // App switches invalidate immediately, even while waiting for the notification shade to close.
-        if (switched) { cancel(); translator.clear(ContextReset.APP_SWITCH); return }
+        if (reason != null) {
+            cancel(reason, event)
+            if (reason == CaptureCancelReason.APP_SWITCH) translator.clear(ContextReset.APP_SWITCH)
+            return
+        }
         if (waitingForShade) return
         val changed = event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
                 event.contentChangeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT != 0)
-        if (windowChanged || (changed && pkg == targetPackage)) {
-            if (busy || (overlay.visible && (windowChanged || settings?.autoCollapse != false))) cancel()
+        if (changed && pkg == targetPackage && overlay.visible && settings?.autoCollapse != false) {
+            cancel(CaptureCancelReason.PAGE_CHANGED, event)
         }
+        if (busy && (changed || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) {
+            if (deferredEvents++ == 0) RunLog.info(LogModule.CAPTURE, "change_deferred", "request" to generation.get(),
+                "stage" to stage, "event_type" to event.eventType, "window" to event.windowId,
+                "change_types" to event.contentChangeTypes)
+        }
+        // A chat refresh/IME/popup event alone does not prove that captured text moved.
+        // Running work is validated with a lightweight pixel grid before any overlay is attached.
     }
 
-    override fun onInterrupt() { RunLog.warn(LogModule.PERMISSION, "accessibility_interrupted"); cancel() }
+    @Suppress("DEPRECATION")
+    private fun isActivityWindow(pkg: String, event: AccessibilityEvent): Boolean {
+        val name = event.className?.toString() ?: return false
+        if (event.windowId < 0) return false
+        val component = ComponentName(pkg, name)
+        if (component == lastActivity) return true
+        return try {
+            packageManager.getActivityInfo(component, 0)
+            lastActivity = component
+            true
+        } catch (_: PackageManager.NameNotFoundException) { false }
+    }
+
+    override fun onInterrupt() { RunLog.warn(LogModule.PERMISSION, "accessibility_interrupted"); cancel(CaptureCancelReason.INTERRUPTED) }
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
-        RunLog.info(LogModule.CAPTURE, "configuration_changed")
-        super.onConfigurationChanged(newConfig); cancel()
+        super.onConfigurationChanged(newConfig)
+        val bounds = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+        val rotation = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY).rotation
+        val geometryChanged = bounds != displayBounds || rotation != displayRotation
+        RunLog.info(LogModule.CAPTURE, "configuration_changed", "geometry_changed" to if (geometryChanged) 1 else 0)
+        displayBounds = Rect(bounds)
+        displayRotation = rotation
+        if (geometryChanged) cancel(CaptureCancelReason.ROTATION)
     }
     override fun onDestroy() {
         preferences.unregisterOnSharedPreferenceChangeListener(configurationListener)
         AppRuntime.main.removeCallbacks(expireContext)
-        cancel()
+        cancel(CaptureCancelReason.SERVICE_DESTROYED)
         translator.clear(ContextReset.SERVICE_STOP)
         RunLog.info(LogModule.PERMISSION, "accessibility_disconnected")
         current = null

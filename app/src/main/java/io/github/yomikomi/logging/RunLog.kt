@@ -32,6 +32,9 @@ object RunLog {
     fun info(module: LogModule, event: String, vararg metrics: Pair<String, Number>) =
         enqueue(LogEntry(LogLevel.INFO, module, event, metrics.toList()))
 
+    internal fun inference(event: String, device: InferenceDevice, vararg metrics: Pair<String, Number>) =
+        enqueue(LogEntry(LogLevel.INFO, LogModule.INFERENCE, event, metrics.toList(), device = device))
+
     fun warn(module: LogModule, event: String, error: Throwable? = null, vararg metrics: Pair<String, Number>) =
         enqueue(LogEntry(LogLevel.WARN, module, event, metrics.toList(), error))
 

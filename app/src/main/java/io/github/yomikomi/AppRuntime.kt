@@ -1,6 +1,7 @@
 package io.github.yomikomi
 
 import android.app.Application
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -24,11 +25,22 @@ data class ModelStatus(val phase: String, val bytes: Long, val error: String? = 
 }
 
 class YomikomiApplication : Application() {
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        RunLog.info(LogModule.APP, "trim_memory", "level" to level)
+    }
+
     override fun onCreate() {
         super.onCreate()
         RunLog.initialize(File(noBackupFilesDir, "logs")) { Log.w("YomikomiLog", "file_logging_failed") }
         RunLog.info(LogModule.APP, "started", "sdk" to Build.VERSION.SDK_INT, "pid" to android.os.Process.myPid(),
             "processors" to Runtime.getRuntime().availableProcessors(), "max_heap_mb" to Runtime.getRuntime().maxMemory() / 1_048_576)
+        if (Build.VERSION.SDK_INT >= 30) try {
+            getSystemService(ActivityManager::class.java).getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()?.let {
+                RunLog.info(LogModule.APP, "previous_exit", "reason" to it.reason, "status" to it.status,
+                    "timestamp_ms" to it.timestamp, "pss_kb" to it.pss, "rss_kb" to it.rss)
+            }
+        } catch (error: Exception) { RunLog.warn(LogModule.APP, "previous_exit_unavailable", error) }
         AppRuntime.initialize(this)
     }
 }
@@ -68,17 +80,19 @@ object AppRuntime {
     }
 
     /** Called only on worker. On-disk deployment is reverified once per process before use. */
-    fun ensureLoaded(spec: ModelSpec, source: String = "自动检测") {
+    fun ensureLoaded(spec: ModelSpec, source: String = "自动检测", gpuAcceleration: Boolean = false) {
         try {
-            if (spec.id !in ready) {
+            val path = File(root, spec.assets.first().path).absolutePath
+            val verified = spec.id in ready
+            if (!verified || (spec == ModelCatalog.translation && !NativeLlama.isLoaded(path, gpuAcceleration))) {
                 update(spec, "加载中", spec.bytes)
                 RunLog.measure(LogModule.MODEL, "load", "kind" to if (spec == ModelCatalog.ocr) 0 else 1) {
                     val verifier = ModelDownloader(root)
-                    RunLog.measure(LogModule.MODEL, "verify", "bytes" to spec.bytes) {
+                    if (!verified) RunLog.measure(LogModule.MODEL, "verify", "bytes" to spec.bytes) {
                         check(spec.assets.all { verifier.valid(File(root, it.path), it) }) { "请先下载完整模型" }
                     }
                     if (spec == ModelCatalog.ocr) ocr.load(source)
-                    else NativeLlama.load(File(root, spec.assets.single().path).absolutePath)
+                    else NativeLlama.load(path, gpuAcceleration)
                 }
             } else if (spec == ModelCatalog.ocr) ocr.load(source)
             ready += spec.id
@@ -90,8 +104,8 @@ object AppRuntime {
         }
     }
 
-    fun load(spec: ModelSpec, source: String) {
+    fun load(spec: ModelSpec, source: String, gpuAcceleration: Boolean = false) {
         update(spec, "加载中", spec.bytes)
-        worker.execute { try { ensureLoaded(spec, source) } catch (_: Exception) { /* Exposed through ModelStatus. */ } }
+        worker.execute { try { ensureLoaded(spec, source, gpuAcceleration) } catch (_: Exception) { /* Exposed through ModelStatus. */ } }
     }
 }

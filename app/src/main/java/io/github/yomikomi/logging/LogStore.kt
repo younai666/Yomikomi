@@ -12,10 +12,18 @@ import java.util.TimeZone
 enum class LogModule { APP, ACTION, PERMISSION, CAPTURE, OCR, MODEL, INFERENCE, API, CONTEXT, OVERLAY, DOWNLOAD, EXPORT, UPDATE }
 enum class LogLevel { INFO, WARN, ERROR }
 
+/** The only text metadata allowed is a bounded hardware name supplied by the native driver. */
+internal data class InferenceDevice(val vulkan: Boolean, val gpuName: String) {
+    fun fields(): String = "backend=${if (vulkan) "vulkan" else "cpu"} gpu_name=\"${gpuName.filter {
+        it in ' '..'~' && it != '"' && it != '\\'
+    }.take(96)}\""
+}
+
 internal data class LogEntry(
     val level: LogLevel, val module: LogModule, val event: String,
     val metrics: List<Pair<String, Number>> = emptyList(), val error: Throwable? = null,
     val time: Long = System.currentTimeMillis(),
+    val device: InferenceDevice? = null,
 )
 
 /** Fixed events and numeric metadata only. Exception messages may contain screen text or credentials. */
@@ -31,7 +39,16 @@ internal class LogStore(private val directory: File, private val maxBytes: Int =
         val text = buildString {
             append(date.format(Date(entry.time))).append(' ').append(entry.level).append(' ').append(entry.module)
                 .append(' ').append(entry.event)
-            entry.metrics.forEach { (key, value) -> append(' ').append(key).append('=').append(value.toLong()) }
+            entry.device?.let { append(' ').append(it.fields()) }
+            entry.metrics.forEach { (key, value) ->
+                append(' ').append(key).append('=').append(when (value) {
+                    is Double, is Float -> {
+                        require(value.toDouble().isFinite())
+                        String.format(Locale.ROOT, "%.3f", value.toDouble())
+                    }
+                    else -> value.toLong().toString()
+                })
+            }
             append('\n')
             entry.error?.let { append(safeStack(it)) }
         }

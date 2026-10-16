@@ -1,5 +1,7 @@
 #include <jni.h>
 #include <llama.h>
+#include <ggml-backend.h>
+#include <ggml-vulkan.h>
 #include <atomic>
 #include <algorithm>
 #include <memory>
@@ -8,6 +10,9 @@
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 std::atomic<jlong> cancellation_version{0};
@@ -15,6 +20,22 @@ std::atomic<jlong> active_version{0};
 std::unique_ptr<llama_model, decltype(&llama_model_free)> model(nullptr, llama_model_free);
 std::unique_ptr<llama_context, decltype(&llama_free)> context(nullptr, llama_free);
 std::vector<llama_token> cached_prompt;
+ggml_backend_dev_t gpu_device = nullptr;
+ggml_backend_dev_t model_devices[2] = {nullptr, nullptr};
+bool using_vulkan = false;
+int offloaded_layers = 0;
+int total_layers = 0;
+int fallback_reason = 0; // 0 none, 1 unavailable, 2 GPU model allocation, 3 GPU context initialization.
+double model_gpu_mib = 0;
+
+void model_log(ggml_log_level, const char * text, void *) {
+    // Parse only fixed numeric diagnostics from the pinned llama.cpp; never forward free-form output.
+    const char * layers = strstr(text, "offloaded ");
+    if (layers) sscanf(layers, "offloaded %d/%d layers to GPU", &offloaded_layers, &total_layers);
+    const char * buffer = strstr(text, "model buffer size = ");
+    double mib = 0;
+    if (buffer && strstr(text, "Vulkan") && sscanf(buffer, "model buffer size = %lf MiB", &mib) == 1) model_gpu_mib += mib;
+}
 bool abort_inference(void *) { return cancellation_version.load() != active_version.load(); }
 using Clock = std::chrono::steady_clock;
 void report(JNIEnv * env, jobject receiver, int stage, Clock::time_point start, int tokens) {
@@ -33,32 +54,95 @@ std::string utf(JNIEnv * env, jstring value) {
     env->ReleaseStringUTFChars(value, chars);
     return result;
 }
-}
 
-extern "C" JNIEXPORT void JNICALL
-Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject, jstring path) {
+void load_model(const std::string & path, ggml_backend_dev_t device) {
     context.reset();
     model.reset();
     cached_prompt.clear();
-    active_version = cancellation_version.load();
-    // Our Kotlin boundary logs timings and sanitized failures, never upstream free-form text.
-    llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
-    llama_backend_init();
+    offloaded_layers = 0;
+    total_layers = 0;
+    model_gpu_mib = 0;
+    model_devices[0] = device;
     auto mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
+    mp.devices = model_devices; // A null-only list explicitly excludes GPUs in CPU mode.
+    mp.n_gpu_layers = device ? -1 : 0;
     mp.load_mode = LLAMA_LOAD_MODE_MMAP;
-    model.reset(llama_model_load_from_file(utf(env, path).c_str(), mp));
-    if (!model) { fail(env, "GGUF load failed"); return; }
+    model.reset(llama_model_load_from_file(path.c_str(), mp));
+    if (!model) throw std::runtime_error("GGUF model allocation failed");
+    if (total_layers == 0) total_layers = llama_model_n_layer(model.get()) + 1;
+    if (device && offloaded_layers <= 0) throw std::runtime_error("GPU layers were not offloaded");
+    if (device) fallback_reason = 3;
     auto cp = llama_context_default_params();
     cp.n_ctx = 8192;
     cp.n_batch = 256;
     cp.n_ubatch = 128;
     cp.n_threads = std::min(4u, std::max(1u, std::thread::hardware_concurrency()));
     cp.n_threads_batch = cp.n_threads;
+    cp.offload_kqv = device != nullptr;
+    cp.op_offload = device != nullptr;
     cp.abort_callback = abort_inference;
     cp.abort_callback_data = nullptr;
     context.reset(llama_init_from_model(model.get(), cp));
-    if (!context) { model.reset(); fail(env, "Inference context allocation failed"); }
+    if (!context) throw std::runtime_error("Inference context allocation failed");
+}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject, jstring path, jboolean prefer_gpu) {
+    try {
+        context.reset(); model.reset(); cached_prompt.clear();
+        using_vulkan = false;
+        gpu_device = nullptr;
+        fallback_reason = prefer_gpu ? 1 : 0;
+        active_version = cancellation_version.load();
+        llama_log_set(model_log, nullptr);
+        // Keep registry construction CPU-only. Explicitly register Vulkan only when requested.
+        setenv("GGML_DISABLE_VULKAN", "1", 1);
+        llama_backend_init();
+        ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        const auto model_path = utf(env, path);
+        if (prefer_gpu) {
+            try {
+                auto reg = ggml_backend_reg_by_name("Vulkan");
+                if (!reg) {
+                    reg = ggml_backend_vk_reg();
+                    if (reg) ggml_backend_register(reg);
+                }
+                if (reg && ggml_backend_reg_dev_count(reg) > 0) {
+                    gpu_device = ggml_backend_reg_dev_get(reg, 0);
+                    fallback_reason = 2;
+                    load_model(model_path, gpu_device);
+                    using_vulkan = true;
+                    fallback_reason = 0;
+                }
+            } catch (const std::exception &) {
+                // Free partial allocations before CPU fallback; never keep two resident models.
+                context.reset(); model.reset(); cached_prompt.clear();
+            }
+        }
+        if (!using_vulkan) load_model(model_path, nullptr);
+    } catch (const std::exception & error) {
+        context.reset(); model.reset(); cached_prompt.clear();
+        fail(env, error.what());
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_io_github_yomikomi_translation_NativeLlama_nativeGpuName(JNIEnv * env, jobject) {
+    return env->NewStringUTF(gpu_device ? ggml_backend_dev_description(gpu_device) : "none");
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_io_github_yomikomi_translation_NativeLlama_nativeBackendInfo(JNIEnv * env, jobject) {
+    size_t free = 0, total = 0;
+    try { if (gpu_device) ggml_backend_dev_memory(gpu_device, &free, &total); } catch (...) { }
+    const jlong values[] = {using_vulkan ? 1 : 0, offloaded_layers, total_layers,
+        static_cast<jlong>(free), static_cast<jlong>(total),
+        model ? static_cast<jlong>(llama_model_size(model.get())) : 0, fallback_reason,
+        static_cast<jlong>(model_gpu_mib * 1024 * 1024)};
+    auto result = env->NewLongArray(8);
+    env->SetLongArrayRegion(result, 0, 8, values);
+    return result;
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
@@ -82,6 +166,7 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
             throw std::runtime_error("Screen exceeds model context; reduce visible text");
         std::vector<llama_token> tokens(count);
         llama_tokenize(vocab, formatted.data(), length, tokens.data(), count, true, true);
+        report(env, receiver, 3, Clock::now(), count);
         auto memory = llama_get_memory(context.get());
         int shared = 0;
         if (reuse_prefix) {
@@ -111,6 +196,7 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
             auto batch = llama_batch_get_one(tokens.data() + pos, std::min(256, count - pos));
             if (llama_decode(context.get(), batch) != 0) throw std::runtime_error("Prompt evaluation failed");
         }
+        llama_synchronize(context.get());
         cached_prompt = std::move(tokens);
         report(env, receiver, 0, prefill_start, count - shared);
         auto decode_start = Clock::now();
@@ -129,6 +215,7 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
             auto batch = llama_batch_get_one(&token, 1);
             if (llama_decode(context.get(), batch) != 0) throw std::runtime_error("Generation failed");
         }
+        llama_synchronize(context.get());
         report(env, receiver, 1, decode_start, generated);
         if (!finished) throw std::runtime_error("Translation exceeded output limit");
         auto result = env->NewByteArray(output.size());

@@ -50,9 +50,12 @@ internal fun HomeScreen(state: UiState, open: (Panel) -> Unit) {
             }
         }
         Hairline(Modifier.padding(horizontal = 12.dp))
-        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (state.api.enabled) "翻译方式" else "推理设备", Modifier.weight(1f), fontSize = 13.sp, color = yomiColors.muted)
-            Text(if (state.api.enabled) "云端" else "CPU", fontSize = 13.sp, color = yomiColors.muted)
+        Box(Modifier.padding(horizontal = 12.dp)) {
+            if (!state.api.enabled) QuietSwitch("GPU 加速", state.gpuAcceleration) { state.gpuAcceleration = it }
+            else Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("翻译方式", Modifier.weight(1f), fontSize = 13.sp, color = yomiColors.muted)
+                Text("云端", fontSize = 13.sp, color = yomiColors.muted)
+            }
         }
     }
 

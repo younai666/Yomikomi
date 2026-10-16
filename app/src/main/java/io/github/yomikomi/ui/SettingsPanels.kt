@@ -136,8 +136,8 @@ private fun PanelContent(panel: Panel, state: UiState, apiDraft: ApiDraft, edito
                 onDismiss()
             }
         }
-        Panel.Ocr -> ModelDownloadControl(ModelCatalog.ocr, state.source)
-        Panel.Translation -> ModelDownloadControl(ModelCatalog.translation, state.source)
+        Panel.Ocr -> ModelDownloadControl(ModelCatalog.ocr, state.source, state.gpuAcceleration)
+        Panel.Translation -> ModelDownloadControl(ModelCatalog.translation, state.source, state.gpuAcceleration)
         Panel.Tile -> {
             ActionButton(if (state.tileAdded) "已添加" else "添加磁贴", {
                 addTranslationTile(context)
@@ -181,7 +181,7 @@ private fun PanelContent(panel: Panel, state: UiState, apiDraft: ApiDraft, edito
 }
 
 @Composable
-private fun ModelDownloadControl(spec: ModelSpec, source: String) {
+private fun ModelDownloadControl(spec: ModelSpec, source: String, gpuAcceleration: Boolean) {
     val context = LocalContext.current
     val status = AppRuntime.status(spec)
     val progress = animateFloatAsState((status.bytes.toFloat() / spec.bytes).coerceIn(0f, 1f),
@@ -209,7 +209,7 @@ private fun ModelDownloadControl(spec: ModelSpec, source: String) {
         when (status.phase) {
             "下载中" -> ModelDownloadService.pause(context)
             "校验中", "加载中", "已加载" -> Unit
-            "已下载" -> AppRuntime.load(spec, source)
+            "已下载" -> AppRuntime.load(spec, source, gpuAcceleration)
             else -> if (AppRuntime.models.values.none { it.busy }) ModelDownloadService.start(context, spec)
         }
     }, Modifier.fillMaxWidth(), primary = status.phase !in listOf("已加载", "加载中", "校验中"),

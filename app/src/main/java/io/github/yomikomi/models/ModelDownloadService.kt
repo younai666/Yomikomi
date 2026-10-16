@@ -59,7 +59,8 @@ class ModelDownloadService : Service() {
                     if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
                         manager.notify(NOTIFICATION, notification(spec, bytes, phase))
                 }
-                AppRuntime.load(spec, RuntimeSettings.read(this).source)
+                val settings = RuntimeSettings.read(this)
+                AppRuntime.load(spec, settings.source, settings.gpuAcceleration)
             } catch (error: Exception) {
                 val bytes = spec.assets.sumOf { asset ->
                     val complete = java.io.File(AppRuntime.root, asset.path)
