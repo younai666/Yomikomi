@@ -24,9 +24,10 @@ internal data class LogEntry(
     val metrics: List<Pair<String, Number>> = emptyList(), val error: Throwable? = null,
     val time: Long = System.currentTimeMillis(),
     val device: InferenceDevice? = null,
+    val diagnostic: String? = null,
 )
 
-/** Fixed events and numeric metadata only. Exception messages may contain screen text or credentials. */
+/** Fixed metadata plus explicitly requested, escaped content diagnostics. Exception messages stay omitted. */
 internal class LogStore(private val directory: File, private val maxBytes: Int = 1_048_576) {
     private val identifier = Regex("[a-z][a-z0-9_.]{0,63}")
     private val date = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -48,6 +49,18 @@ internal class LogStore(private val directory: File, private val maxBytes: Int =
                     }
                     else -> value.toLong().toString()
                 })
+            }
+            entry.diagnostic?.let { value ->
+                append(" text=\"")
+                value.forEach { char -> when (char) {
+                    '"' -> append("\\\"")
+                    '\\' -> append("\\\\")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> if (char < ' ') append("\\u%04x".format(char.code)) else append(char)
+                } }
+                append('"')
             }
             append('\n')
             entry.error?.let { append(safeStack(it)) }

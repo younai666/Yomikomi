@@ -19,6 +19,18 @@ class LogStoreTest {
             store.snapshot().toString(Charsets.UTF_8))
     }
 
+    @Test fun inferenceDiagnosticsBoundHardwareNameAndPreserveRatesAndLayerCounts() {
+        val store = LogStore(folder.newFolder())
+        assertTrue(store.append(LogEntry(LogLevel.INFO, LogModule.INFERENCE, "backend",
+            listOf("offload_layers" to 33, "decode_tok_s" to 14.125), time = 0,
+            device = InferenceDevice(true, "Adreno (TM) 740\n\"\\" + "x".repeat(200)))))
+        val text = store.snapshot().toString(Charsets.UTF_8)
+        assertEquals(1, text.count { it == '\n' })
+        assertTrue(text.contains("backend=vulkan gpu_name=\"Adreno (TM) 740"))
+        assertEquals(96, text.substringAfter("gpu_name=\"").substringBefore('"').length)
+        assertTrue(text.contains("offload_layers=33 decode_tok_s=14.125"))
+    }
+
     @Test fun exceptionsKeepFramesCausesAndSuppressedButNeverTheirMessages() {
         val store = LogStore(folder.newFolder())
         val sensitive = "sk-private-key OCR原文 译文 https://secret.example/private-path"

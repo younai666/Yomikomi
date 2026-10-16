@@ -25,7 +25,8 @@ ggml_backend_dev_t model_devices[2] = {nullptr, nullptr};
 bool using_vulkan = false;
 int offloaded_layers = 0;
 int total_layers = 0;
-int fallback_reason = 0; // 0 none, 1 unavailable, 2 GPU model allocation, 3 GPU context initialization.
+int fallback_reason = 0; // 0 none, 1 unavailable, 2 GPU model allocation, 3 GPU context initialization, 4 no offload.
+std::atomic<int> gpu_error{0}; // Fixed categories only; never retain upstream text.
 double model_gpu_mib = 0;
 
 void model_log(ggml_log_level, const char * text, void *) {
@@ -35,6 +36,14 @@ void model_log(ggml_log_level, const char * text, void *) {
     const char * buffer = strstr(text, "model buffer size = ");
     double mib = 0;
     if (buffer && strstr(text, "Vulkan") && sscanf(buffer, "model buffer size = %lf MiB", &mib) == 1) model_gpu_mib += mib;
+    if (strstr(text, "ErrorOutOfDeviceMemory") || strstr(text, "No suitable memory type") || strstr(text, "buffer size limit")) gpu_error = 1;
+    else if (strstr(text, "ErrorFeatureNotPresent")) gpu_error = 2;
+    else if (strstr(text, "ErrorExtensionNotPresent")) gpu_error = 3;
+    else if (strstr(text, "ErrorIncompatibleDriver")) gpu_error = 4;
+    else if (strstr(text, "ErrorDeviceLost")) gpu_error = 5;
+    else if (strstr(text, "Shared memory size too small")) gpu_error = 6;
+    else if (strstr(text, "createComputePipelines")) gpu_error = 7;
+    else if (strstr(text, "ErrorInitializationFailed")) gpu_error = 8;
 }
 bool abort_inference(void *) { return cancellation_version.load() != active_version.load(); }
 using Clock = std::chrono::steady_clock;
@@ -70,7 +79,10 @@ void load_model(const std::string & path, ggml_backend_dev_t device) {
     model.reset(llama_model_load_from_file(path.c_str(), mp));
     if (!model) throw std::runtime_error("GGUF model allocation failed");
     if (total_layers == 0) total_layers = llama_model_n_layer(model.get()) + 1;
-    if (device && offloaded_layers <= 0) throw std::runtime_error("GPU layers were not offloaded");
+    if (device && offloaded_layers <= 0) {
+        fallback_reason = 4;
+        throw std::runtime_error("GPU layers were not offloaded");
+    }
     if (device) fallback_reason = 3;
     auto cp = llama_context_default_params();
     cp.n_ctx = 8192;
@@ -94,6 +106,7 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject
         using_vulkan = false;
         gpu_device = nullptr;
         fallback_reason = prefer_gpu ? 1 : 0;
+        gpu_error = 0;
         active_version = cancellation_version.load();
         llama_log_set(model_log, nullptr);
         // Keep registry construction CPU-only. Explicitly register Vulkan only when requested.
@@ -115,7 +128,8 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject
                     using_vulkan = true;
                     fallback_reason = 0;
                 }
-            } catch (const std::exception &) {
+            } catch (const std::exception & error) {
+                model_log(GGML_LOG_LEVEL_ERROR, error.what(), nullptr);
                 // Free partial allocations before CPU fallback; never keep two resident models.
                 context.reset(); model.reset(); cached_prompt.clear();
             }
@@ -139,9 +153,9 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeBackendInfo(JNIEnv * env, 
     const jlong values[] = {using_vulkan ? 1 : 0, offloaded_layers, total_layers,
         static_cast<jlong>(free), static_cast<jlong>(total),
         model ? static_cast<jlong>(llama_model_size(model.get())) : 0, fallback_reason,
-        static_cast<jlong>(model_gpu_mib * 1024 * 1024)};
-    auto result = env->NewLongArray(8);
-    env->SetLongArrayRegion(result, 0, 8, values);
+        static_cast<jlong>(model_gpu_mib * 1024 * 1024), gpu_error.load()};
+    auto result = env->NewLongArray(9);
+    env->SetLongArrayRegion(result, 0, 9, values);
     return result;
 }
 

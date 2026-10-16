@@ -62,6 +62,9 @@ class CaptureLifecycleDeviceTest {
             assertTrue(log.contains("ACTION tile_stop_listening"))
             assertTrue(log.contains("CAPTURE validation request="))
             assertTrue(log.contains("unchanged=1"))
+            val requestLog = log.substringAfterLast("CAPTURE requested")
+            assertEquals("One OCR only; validation must compare pixels", 1,
+                Regex("OCR recognize.started").findAll(requestLog).count())
             clickTile()
             waitUntil(5_000) { AppRuntime.pipelinePhase == "就绪" }
 

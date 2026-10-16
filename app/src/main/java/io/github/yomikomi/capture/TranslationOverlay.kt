@@ -18,10 +18,13 @@ import io.github.yomikomi.RuntimeSettings
 import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.translation.RecognizedBlock
 import io.github.yomikomi.translation.TranslatedScreen
+import io.github.yomikomi.translation.ScreenBlock
+import io.github.yomikomi.translation.TranslationProtocol
 import io.github.yomikomi.logging.LogModule
 import io.github.yomikomi.logging.RunLog
 
-data class OverlayBlock(val bounds: PixelBounds, val background: Int, val layout: StaticLayout)
+data class OverlayBlock(val bounds: PixelBounds, val background: Int, val layout: StaticLayout,
+    val sourceBounds: PixelBounds = bounds, val ids: List<String> = emptyList(), val sourceMasks: List<PixelBounds> = listOf(sourceBounds))
 
 /** Sample only the perimeter, avoiding the original glyphs when choosing a covering color. */
 fun overlayBackgrounds(bitmap: Bitmap, blocks: List<RecognizedBlock>): Map<PixelBounds, Int> = blocks.associate { block ->
@@ -40,23 +43,69 @@ fun overlayBackgrounds(bitmap: Bitmap, blocks: List<RecognizedBlock>): Map<Pixel
 }
 
 /** Prepare immutable text layouts on the pipeline worker; the main thread only attaches/draws the view. */
-fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, textSize: Float): List<OverlayBlock> =
-    screen.blocks.map { block ->
-        val color = backgrounds.getValue(block.bounds)
-        val text = screen.translations.getValue(block.id)
+fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, textSize: Float,
+    viewport: PixelBounds): List<OverlayBlock> {
+    require(screen.blocks.map { it.id }.distinct().size == screen.blocks.size &&
+        screen.translations.keys == screen.blocks.map { it.id }.toSet()) { "Overlay ID 映射不完整" }
+    screen.translations.values.forEach(TranslationProtocol::validateText)
+    // Adjacent lines of the same size/column form a paragraph, while their ID mapping remains intact.
+    val groups = mutableListOf<MutableList<ScreenBlock>>()
+    fun metadata(text: String) = (Regex("\\b\\d{1,2}:\\d{2}\\b").containsMatchIn(text) && text.split(' ').size <= 4) ||
+        (text.startsWith('@') && text.substringAfter(' ', "").none { it in '\u0400'..'\u04ff' })
+    for (block in screen.blocks.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))) {
+        val b = block.bounds
+        if (metadata(block.text)) { groups.add(mutableListOf(block)); continue }
+        val paragraph = groups.lastOrNull { it.none { line -> metadata(line.text) } }
+        val prior = paragraph?.lastOrNull()?.bounds
+        if (prior != null && b.top >= prior.bottom && b.top - prior.bottom <= maxOf(prior.height, b.height) * .9f &&
+            minOf(prior.right, b.right) - maxOf(prior.left, b.left) >= minOf(prior.width, b.width) * .6f &&
+            b.height.toFloat() / prior.height in .65f..1.5f) {
+            paragraph!!.add(block)
+        } else groups.add(mutableListOf(block))
+    }
+    fun bounds(group: List<ScreenBlock>) = PixelBounds(group.minOf { it.bounds.left }, group.minOf { it.bounds.top },
+        group.maxOf { it.bounds.right }, group.maxOf { it.bounds.bottom })
+    return groups.mapNotNull { group ->
+        if (group.all { metadata(it.text) }) return@mapNotNull null
+        if (screen.sourceLanguage == "俄语" && group.all { '#' in it.text && it.text.count { c -> c in '\u0400'..'\u04ff' } < 3 })
+            return@mapNotNull null // A channel/input identifier is already readable; do not paint OCR guesses over it.
+        if (group.all { screen.translations.getValue(it.id).trim() == it.text.trim() }) return@mapNotNull null
+        val source = bounds(group)
+        val others = groups.filter { it !== group }.map(::bounds)
+        val right = minOf(viewport.right, others.filter { it.top < source.bottom && it.bottom > source.top && it.left >= source.right }
+            .minOfOrNull { it.left - 6 } ?: viewport.right)
+        val bottom = minOf(viewport.bottom, others.filter { it.left < right && it.right > source.left && it.top >= source.bottom }
+            .minOfOrNull { it.top - 4 } ?: viewport.bottom)
+        val width = maxOf(source.width, right - source.left)
+        val height = maxOf(source.height, bottom - source.top)
+        val color = backgrounds.getValue(group.first().bounds)
+        val text = group.joinToString(" ") { screen.translations.getValue(it.id) }
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             this.color = if ((Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000 < 140)
                 Color.rgb(240, 238, 233) else Color.rgb(28, 28, 27)
-            this.textSize = minOf(textSize, block.bounds.height * 0.9f)
+            this.textSize = textSize
         }
-        fun layout() = StaticLayout.Builder.obtain(text, 0, text.length, paint, block.bounds.width)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1f).build()
-        var result = layout()
-        while (result.height > block.bounds.height && paint.textSize > 2f) {
-            paint.textSize = maxOf(2f, paint.textSize - 1f)
-            result = layout()
+        fun layout() = StaticLayout.Builder.obtain(text, 0, text.length, paint,
+            minOf(width, maxOf(source.width, kotlin.math.ceil(Layout.getDesiredWidth(text, paint).toDouble()).toInt())))
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1f)
+            .setIndents(intArrayOf(group.first().bounds.left - source.left, 0), null).build()
+        var result: StaticLayout? = null
+        for (scale in listOf(1f, .95f, .9f)) {
+            paint.textSize = textSize * scale
+            val candidate = layout()
+            if (candidate.height <= height) { result = candidate; break }
         }
-        OverlayBlock(block.bounds, color, result)
+        if (result == null) {
+            RunLog.warn(LogModule.OVERLAY, "layout_unfit", null, "ids" to group.size)
+            null // Keep the original readable text rather than shrinking to illegible pixels or clipping a translation.
+        } else OverlayBlock(PixelBounds(source.left, source.top, source.left + result.width,
+            source.top + maxOf(source.height, result.height)), color, result, source, group.map { it.id }, group.map { it.bounds })
+    }.also { rendered ->
+        RunLog.info(LogModule.OVERLAY, "layout", "source_blocks" to screen.blocks.size, "paragraphs" to rendered.size,
+            "rendered_ids" to rendered.sumOf { it.ids.size }, "base_px" to textSize,
+            "min_px" to (rendered.minOfOrNull { it.layout.paint.textSize } ?: textSize),
+            "max_px" to (rendered.maxOfOrNull { it.layout.paint.textSize } ?: textSize))
+    }
 }
 
 @RequiresApi(30)
@@ -86,10 +135,13 @@ class TranslationOverlay(private val context: Context) {
     }
 
     fun hide() {
-        view?.let {
-            RunLog.measure(LogModule.OVERLAY, "hide") { manager.removeViewImmediate(it) }
-        }
+        val attached = view ?: return
         view = null
+        try { RunLog.measure(LogModule.OVERLAY, "hide") { manager.removeViewImmediate(attached) } }
+        catch (error: RuntimeException) {
+            // Android may already have removed the accessibility window during unbind.
+            RunLog.warn(LogModule.OVERLAY, "hide_failed", error)
+        }
     }
 
     private class OverlayView(context: Context, private val blocks: List<OverlayBlock>, private val opacity: Int) : View(context) {
@@ -103,7 +155,11 @@ class TranslationOverlay(private val context: Context) {
                 val b = block.bounds
                 background.color = block.background
                 background.alpha = opacity
-                canvas.drawRect(b.left - 2f, b.top - 2f, b.right + 2f, b.bottom + 2f, background)
+                block.sourceMasks.forEach { mask -> canvas.drawRect(mask.left - 2f, mask.top - 2f, mask.right + 2f, mask.bottom + 2f, background) }
+                for (line in 0 until block.layout.lineCount) canvas.drawRect(
+                    b.left + maxOf(block.layout.getLineLeft(line), if (line == 0) (block.sourceMasks.first().left - b.left).toFloat() else 0f) - 2f,
+                    b.top + block.layout.getLineTop(line) - 1f,
+                    b.left + block.layout.getLineRight(line) + 2f, b.top + block.layout.getLineBottom(line) + 1f, background)
                 canvas.save()
                 canvas.clipRect(b.left, b.top, b.right, b.bottom)
                 canvas.translate(b.left.toFloat(), b.top.toFloat())

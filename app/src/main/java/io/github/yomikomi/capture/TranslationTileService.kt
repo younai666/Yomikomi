@@ -56,7 +56,12 @@ class TranslationTileService : TileService() {
     }
     companion object {
         fun refresh(context: Context) {
-            if (Build.VERSION.SDK_INT >= 24) requestListeningState(context, ComponentName(context, TranslationTileService::class.java))
+            if (Build.VERSION.SDK_INT >= 24) try {
+                requestListeningState(context, ComponentName(context, TranslationTileService::class.java))
+            } catch (error: RuntimeException) {
+                // System UI/user-profile availability must not break accessibility binding or translation.
+                RunLog.warn(LogModule.PERMISSION, "tile_refresh_failed", error)
+            }
         }
     }
 }

@@ -16,6 +16,8 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.SocketException
+import java.util.zip.GZIPOutputStream
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
@@ -88,6 +90,96 @@ class ApiTranslationDeviceTest {
         canceled.cancel()
         assertThrows(IllegalStateException::class.java) { canceled.translate(request()) }
         assertFalse(opened)
+    }
+
+    @Test fun completeJsonDoesNotWaitForEofOrAResetAfterTheBody() {
+        val text = "[b7] → 爱丽丝拿起{霜华}，说：\"走吧\"。\n[b12] → 她笑了。"
+        val bytes = ("\n\n" + response(text)).toByteArray(Charsets.UTF_8)
+        var reads = 0
+        val conn = object : FakeConnection("") {
+            override fun getInputStream() = object : InputStream() {
+                var position = 0
+                override fun read(): Int = error("Use bounded bulk reads")
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    reads++
+                    if (position == bytes.size) throw SocketException("reset after complete body")
+                    // Split escapes, Chinese UTF-8 bytes and braces over read boundaries.
+                    val count = minOf(3, length, bytes.size - position)
+                    bytes.copyInto(buffer, offset, position, position + count)
+                    position += count
+                    return count
+                }
+                override fun close() { throw SocketException("close after complete body") }
+            }
+        }
+        val translated = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        assertEquals(text.substringBefore('\n').substringAfter(" → "), translated.first().text)
+        assertEquals((bytes.size + 2) / 3, reads)
+        assertEquals("close", conn.getRequestProperty("Connection"))
+        assertTrue(conn.disconnected)
+    }
+
+    @Test fun resetAfterHttp200BeforeCompleteBodyFailsWithoutReplayingThePost() {
+        val bytes = response("[b7] → 爱丽丝\n[b12] → 她笑了。").toByteArray(Charsets.UTF_8)
+        var opens = 0
+        val conn = object : FakeConnection("") {
+            override fun getInputStream() = object : InputStream() {
+                var sent = false
+                override fun read(): Int = error("Use bounded bulk reads")
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    if (sent) throw SocketException("private response must not leak")
+                    sent = true
+                    bytes.copyInto(buffer, offset, 0, bytes.size / 2)
+                    return bytes.size / 2
+                }
+            }
+        }
+        val error = assertThrows(IllegalStateException::class.java) {
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, { opens++; conn }).translate(request())
+        }
+        assertEquals("API 响应读取中断，请重试", error.message)
+        assertEquals(1, opens)
+        assertTrue(conn.disconnected)
+        val log = runtimeLogSnapshot()
+        assertTrue(log.contains("API transport_failed stage=4 http_status=200"))
+        assertFalse(log.contains("private response must not leak"))
+    }
+
+    @Test fun explicitIdentityAndGzipCompatibilityKeepUtf8AndRecordBodyPhases() {
+        val encoded = ByteArrayOutputStream().apply {
+            GZIPOutputStream(this).use { it.write(response("[b7] → 爱丽丝拿起霜华。\n[b12] → 她说：走吧。").toByteArray(Charsets.UTF_8)) }
+        }.toByteArray()
+        val conn = object : FakeConnection("") {
+            override fun getHeaderField(name: String) = when (name) {
+                "Content-Encoding" -> "gzip"
+                "Transfer-Encoding" -> "chunked"
+                else -> null
+            }
+            override fun getInputStream(): InputStream = object : ByteArrayInputStream(encoded) {
+                override fun read(bytes: ByteArray, offset: Int, length: Int) = super.read(bytes, offset, minOf(length, 3))
+            }
+        }
+        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        assertTrue(result.first().text.contains("霜华"))
+        assertEquals("identity", conn.getRequestProperty("Accept-Encoding"))
+        val log = runtimeLogSnapshot()
+        assertTrue(log.contains("gzip=1 chunked=1"))
+        assertTrue(log.contains("API first_byte"))
+        assertTrue(log.contains("API body_read"))
+        assertFalse(log.contains("Bearer test-key"))
+    }
+
+    @Test fun gzipHeaderResetCannotBeMisreportedAsEmptySuccessfulTranslation() {
+        val conn = object : FakeConnection("") {
+            override fun getHeaderField(name: String) = if (name == "Content-Encoding") "gzip" else null
+            override fun getInputStream() = object : InputStream() {
+                override fun read(): Int = throw SocketException("reset in gzip header")
+            }
+        }
+        assertThrows(IllegalStateException::class.java) {
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        }
+        assertTrue(runtimeLogSnapshot().contains("API transport_failed stage=3 http_status=200"))
     }
 
     @Test fun keyIsEncryptedOriginBoundAndApiSettingsPersistIndependently() {

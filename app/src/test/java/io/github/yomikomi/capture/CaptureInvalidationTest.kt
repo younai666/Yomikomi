@@ -21,7 +21,8 @@ class CaptureInvalidationTest {
     }
 
     private val viewport = PixelBounds(0, 100, 1080, 2300)
-    private fun fingerprint(pixel: (Int, Int) -> Int) = ScreenshotFingerprint.sample(viewport, pixel)
+    private val regions = (0..2300 step 180).map { PixelBounds(50, it, 700, it + 25) }
+    private fun fingerprint(pixel: (Int, Int) -> Int) = ScreenshotFingerprint.sample(viewport, regions, pixel)
 
     @Test fun pixelValidationIgnoresMinorRenderingDifferencesAndSystemBars() {
         val first = fingerprint { _, _ -> 0x202020 }
@@ -36,5 +37,12 @@ class CaptureInvalidationTest {
         assertTrue(first.compare(fingerprint { _, _ -> 0x202020 }).changed)
         assertTrue(first.compare(fingerprint { x, y -> if (x in 50..700 && (y + 60) % 180 in 0..25) 0xffffff else 0x202020 }).changed)
         assertTrue(first.compare(ScreenshotFingerprint.sample(PixelBounds(0, 100, 1080, 2200)) { _, _ -> 0x202020 }).changed)
+    }
+
+    @Test fun unrelatedAnimationAndLocalizedRefreshDoNotInvalidateCapturedText() {
+        val first = fingerprint { _, _ -> 0x202020 }
+        assertFalse(first.compare(fingerprint { x, _ -> if (x > 720) 0xffffff else 0x202020 }).changed)
+        assertFalse(first.compare(fingerprint { x, y -> if (x in 50..100 && y in 180..205) 0xffffff else 0x202020 }).changed)
+        assertTrue(first.compare(fingerprint { x, y -> if (x in 50..700 && y < 1200) 0xffffff else 0x202020 }).changed)
     }
 }

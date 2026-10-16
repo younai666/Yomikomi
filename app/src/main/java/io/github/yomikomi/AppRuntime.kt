@@ -35,13 +35,14 @@ class YomikomiApplication : Application() {
         RunLog.initialize(File(noBackupFilesDir, "logs")) { Log.w("YomikomiLog", "file_logging_failed") }
         RunLog.info(LogModule.APP, "started", "sdk" to Build.VERSION.SDK_INT, "pid" to android.os.Process.myPid(),
             "processors" to Runtime.getRuntime().availableProcessors(), "max_heap_mb" to Runtime.getRuntime().maxMemory() / 1_048_576)
-        if (Build.VERSION.SDK_INT >= 30) try {
+        AppRuntime.initialize(this)
+        AppRuntime.worker.execute { if (Build.VERSION.SDK_INT >= 30) try {
             getSystemService(ActivityManager::class.java).getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()?.let {
                 RunLog.info(LogModule.APP, "previous_exit", "reason" to it.reason, "status" to it.status,
                     "timestamp_ms" to it.timestamp, "pss_kb" to it.pss, "rss_kb" to it.rss)
             }
-        } catch (error: Exception) { RunLog.warn(LogModule.APP, "previous_exit_unavailable", error) }
-        AppRuntime.initialize(this)
+        } catch (error: Exception) { RunLog.warn(LogModule.APP, "previous_exit_unavailable", error) } }
+        RunLog.info(LogModule.APP, "created")
     }
 }
 
@@ -51,9 +52,8 @@ object AppRuntime {
     val main = Handler(Looper.getMainLooper())
     lateinit var root: File
         private set
-    lateinit var ocr: TesseractOcr
-        private set
-    var models by mutableStateOf<Map<String, ModelStatus>>(emptyMap())
+    val ocr by lazy { TesseractOcr(root) }
+    var models by mutableStateOf(ModelCatalog.all.associate { it.id to ModelStatus("未下载", 0) })
         private set
     var serviceConnected by mutableStateOf(false)
     var tileAdded by mutableStateOf(false)
@@ -61,17 +61,20 @@ object AppRuntime {
     private val ready = mutableSetOf<String>() // Worker-thread owned.
 
     fun initialize(context: Context) {
-        root = File(context.noBackupFilesDir, "models").apply { mkdirs() }
-        ocr = TesseractOcr(root)
-        tileAdded = context.getSharedPreferences("runtime", 0).getBoolean("tile", false)
-        models = ModelCatalog.all.associate { spec ->
-            val complete = spec.assets.all { File(root, it.path).length() == it.bytes }
-            val bytes = spec.assets.sumOf { asset ->
-                val file = File(root, asset.path)
-                if (file.length() == asset.bytes) asset.bytes else File(root, "${asset.path}.part").length()
+        root = File(context.noBackupFilesDir, "models")
+        worker.execute { try {
+            val added = context.getSharedPreferences("runtime", 0).getBoolean("tile", false)
+            val discovered = ModelCatalog.all.associate { spec ->
+                val complete = spec.assets.all { File(root, it.path).length() == it.bytes }
+                val bytes = spec.assets.sumOf { asset ->
+                    val file = File(root, asset.path)
+                    if (file.length() == asset.bytes) asset.bytes else File(root, "${asset.path}.part").length()
+                }
+                spec.id to ModelStatus(if (complete) "已下载" else if (bytes > 0) "已暂停" else "未下载", bytes)
             }
-            spec.id to ModelStatus(if (complete) "已下载" else if (bytes > 0) "已暂停" else "未下载", bytes)
-        }
+            main.post { tileAdded = added; models = discovered }
+            RunLog.info(LogModule.APP, "runtime_ready")
+        } catch (error: Exception) { RunLog.error(LogModule.APP, "runtime_discovery_failed", error) } }
     }
 
     fun status(spec: ModelSpec) = models.getValue(spec.id)

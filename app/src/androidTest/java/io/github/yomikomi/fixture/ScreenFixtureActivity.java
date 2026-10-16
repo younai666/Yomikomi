@@ -6,6 +6,10 @@ import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.view.MotionEvent;
+import android.view.accessibility.AccessibilityEvent;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -23,6 +27,42 @@ public class ScreenFixtureActivity extends Activity {
     }
 
     private void showPage() {
+        if (getIntent().getBooleanExtra("image", false)) {
+            getWindow().setDecorFitsSystemWindows(false);
+            getWindow().getDecorView().setSystemUiVisibility(5894 | 1024 | 512);
+            final Bitmap image = BitmapFactory.decodeFile(new java.io.File(getFilesDir(), "discord.png").getAbsolutePath());
+            if (image == null) throw new IllegalStateException("Push the supplied Discord fixture into the test app's files directory");
+            setContentView(new View(this) {
+                float offset = 0, down;
+                @Override protected void onDraw(Canvas canvas) {
+                    canvas.drawColor(Color.rgb(26, 26, 30));
+                    android.graphics.Rect display = getWindowManager().getCurrentWindowMetrics().getBounds();
+                    float scale = Math.min(display.width() / (float)image.getWidth(), display.height() / (float)image.getHeight());
+                    int[] location = new int[2]; getLocationOnScreen(location);
+                    canvas.save();
+                    canvas.translate(-location[0] + (display.width() - image.getWidth() * scale) / 2,
+                        -location[1] + (display.height() - image.getHeight() * scale) / 2 + offset);
+                    canvas.scale(scale, scale);
+                    canvas.drawBitmap(image, 0, 0, new Paint(Paint.FILTER_BITMAP_FLAG));
+                    canvas.restore();
+                }
+                @Override public boolean onTouchEvent(MotionEvent event) {
+                    if (event.getAction() == MotionEvent.ACTION_DOWN) down = event.getY();
+                    if (event.getAction() == MotionEvent.ACTION_UP && Math.abs(event.getY() - down) > 50) {
+                        offset += event.getY() - down;
+                        invalidate();
+                        AccessibilityEvent scroll = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_VIEW_SCROLLED);
+                        scroll.setPackageName(getPackageName());
+                        scroll.setClassName("android.widget.ScrollView");
+                        scroll.setSource(this);
+                        scroll.setScrollDeltaY((int)(down - event.getY()));
+                        getParent().requestSendAccessibilityEvent(this, scroll);
+                    }
+                    return true;
+                }
+            });
+            return;
+        }
         if (getIntent().getBooleanExtra("secure", false)) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         String language = getIntent().getStringExtra("language");
         boolean dark = getIntent().getBooleanExtra("dark", false);

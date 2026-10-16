@@ -32,6 +32,16 @@ object RunLog {
     fun info(module: LogModule, event: String, vararg metrics: Pair<String, Number>) =
         enqueue(LogEntry(LogLevel.INFO, module, event, metrics.toList()))
 
+    /** Explicit pipeline diagnostics requested for OCR/API mapping; never pass headers or credentials. */
+    internal fun text(module: LogModule, event: String, request: Long, value: String, secret: String = "") {
+        val redacted = (if (secret.isNotEmpty()) value.replace(secret, "[REDACTED]") else value)
+            .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "[REDACTED]")
+        val bounded = redacted.take(65_536).let { if (it.lastOrNull()?.isHighSurrogate() == true) it.dropLast(1) else it }
+        enqueue(LogEntry(LogLevel.INFO, module, event,
+            listOf("request" to request, "characters" to redacted.length, "truncated" to if (bounded.length < redacted.length) 1 else 0),
+            diagnostic = bounded))
+    }
+
     internal fun inference(event: String, device: InferenceDevice, vararg metrics: Pair<String, Number>) =
         enqueue(LogEntry(LogLevel.INFO, LogModule.INFERENCE, event, metrics.toList(), device = device))
 

@@ -7,7 +7,10 @@ import android.os.Debug
 
 /** Serialize ownership of the native model/context; cancellation only touches an atomic flag. */
 object NativeLlama {
-    init { System.loadLibrary("yomikomi") }
+    private val library = lazy {
+        try { System.loadLibrary("yomikomi") }
+        catch (error: LinkageError) { throw IllegalStateException("本地推理组件不可用，请重新安装应用", error) }
+    }
     private var loadedPath: String? = null
     private var requestedGpu = false
     internal var usesVulkan = false
@@ -29,6 +32,7 @@ object NativeLlama {
         usesVulkan = false
         requestedGpu = gpuAcceleration
         RunLog.measure(LogModule.INFERENCE, "load", "gpu_requested" to if (gpuAcceleration) 1 else 0) {
+            library.value
             nativeLoad(path, gpuAcceleration)
         }
         usesVulkan = nativeBackendInfo()[0] == 1L
@@ -56,8 +60,8 @@ object NativeLlama {
         }
     }
 
-    fun cancel() { RunLog.info(LogModule.INFERENCE, "cancel_requested"); nativeCancel() }
-    fun cancellationVersion(): Long = nativeCancellationVersion()
+    fun cancel() { RunLog.info(LogModule.INFERENCE, "cancel_requested"); if (library.isInitialized()) nativeCancel() }
+    fun cancellationVersion(): Long { library.value; return nativeCancellationVersion() }
 
     // Called only with fixed stage codes and numeric counters; no native text crosses into diagnostics.
     @Suppress("unused")
@@ -81,6 +85,7 @@ object NativeLlama {
             "offload_layers" to info[1], "total_layers" to info[2],
             "gpu_free_bytes" to info[3], "gpu_total_bytes" to info[4], "model_bytes" to info[5],
             "fallback_reason" to info[6], "model_gpu_buffer_mib" to info[7] / 1048576.0,
+            "gpu_error" to info[8],
             "process_pss_kb" to memory.totalPss, "native_heap_bytes" to Debug.getNativeHeapAllocatedSize(),
             "java_heap_bytes" to Runtime.getRuntime().let { it.totalMemory() - it.freeMemory() })
     } catch (error: Exception) { RunLog.warn(LogModule.INFERENCE, "memory_unavailable", error) }

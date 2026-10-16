@@ -60,6 +60,21 @@ if (NOT Vulkan_GLSLC_EXECUTABLE)
         HINTS "${ANDROID_NDK}/shader-tools/${yomi_shader_host}" "$ENV{VULKAN_SDK}/Bin"
         NO_CMAKE_FIND_ROOT_PATH REQUIRED)
 endif()
+# Shader generation runs on the build host. Give its nested CMake the SDK's
+# Ninja explicitly; Android Studio need not put Ninja on the global PATH.
+if (NOT GGML_VULKAN_SHADERS_GEN_TOOLCHAIN)
+    set(GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "${CMAKE_CURRENT_BINARY_DIR}/host-shaders.cmake")
+    file(TO_CMAKE_PATH "${CMAKE_MAKE_PROGRAM}" yomi_host_ninja)
+    set(yomi_host_toolchain
+        "set(CMAKE_MAKE_PROGRAM \"${yomi_host_ninja}\" CACHE FILEPATH \"\" FORCE)\n")
+    if (CMAKE_HOST_WIN32)
+        find_program(yomi_host_compiler NAMES cl clang-cl NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+        string(APPEND yomi_host_toolchain
+            "set(CMAKE_C_COMPILER \"${yomi_host_compiler}\" CACHE FILEPATH \"\" FORCE)\n"
+            "set(CMAKE_CXX_COMPILER \"${yomi_host_compiler}\" CACHE FILEPATH \"\" FORCE)\n")
+    endif()
+    file(GENERATE OUTPUT "${GGML_VULKAN_SHADERS_GEN_TOOLCHAIN}" CONTENT "${yomi_host_toolchain}")
+endif()
 FetchContent_Declare(llama
     URL https://codeload.github.com/ggml-org/llama.cpp/tar.gz/620d2225cc436ab0b001e3200e590e3b286ef9ab
     URL_HASH SHA256=1d4a987d9bd048f6e93107e838026438df70fbde237fc0c69c63d600512b4bd9)
@@ -70,6 +85,9 @@ target_compile_options(ggml-vulkan PRIVATE -include "${CMAKE_CURRENT_LIST_DIR}/a
 get_target_property(vulkan_links ggml-vulkan LINK_LIBRARIES)
 list(REMOVE_ITEM vulkan_links Vulkan::Vulkan)
 set_target_properties(ggml-vulkan PROPERTIES LINK_LIBRARIES "${vulkan_links}")
+get_target_property(vulkan_interface_links ggml-vulkan INTERFACE_LINK_LIBRARIES)
+list(REMOVE_ITEM vulkan_interface_links "$<LINK_ONLY:Vulkan::Vulkan>")
+set_target_properties(ggml-vulkan PROPERTIES INTERFACE_LINK_LIBRARIES "${vulkan_interface_links}")
 target_link_libraries(ggml-vulkan PRIVATE Vulkan::Headers)
 add_library(yomikomi SHARED inference.cpp vulkan_loader.cpp)
 target_link_libraries(yomikomi PRIVATE Vulkan::Headers)

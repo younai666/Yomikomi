@@ -5,6 +5,8 @@ Yomikomi's integration code is independently implemented. StarFlow source is not
 | Component | Source | License |
 | --- | --- | --- |
 | llama.cpp, pinned at `620d2225cc436ab0b001e3200e590e3b286ef9ab` | https://github.com/ggml-org/llama.cpp | MIT |
+| Vulkan-Headers `vulkan-sdk-1.4.335.0` | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT (MIT chosen) |
+| SPIRV-Headers `vulkan-sdk-1.4.335.0` | https://github.com/KhronosGroup/SPIRV-Headers | MIT |
 | Tesseract4Android 4.9.0 | https://github.com/adaptech-cz/Tesseract4Android | Apache-2.0 |
 | Tesseract OCR 5.5.1 | https://github.com/tesseract-ocr/tesseract | Apache-2.0 |
 | Leptonica 1.85.0 | https://github.com/DanBloomberg/leptonica | BSD-2-Clause |

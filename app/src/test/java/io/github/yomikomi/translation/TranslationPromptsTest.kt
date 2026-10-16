@@ -88,4 +88,15 @@ class TranslationPromptsTest {
             "英语", "简体中文", "app", 0, settings)
         assertEquals(settings, received!!.prompt)
     }
+
+    @Test fun rejectsInvisibleCorruptionEmbeddedIdsAndInvalidRequestedIds() {
+        for (bad in listOf("错误�", "译文\u0000", "文本\u202e", "额外 [b99]", "\ud800")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                TranslationProtocol.parse("[b7] → $bad\n[b12] → 正常", segments)
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TranslationProtocol.parse("[b7] → 一\n[b7] → 二", listOf(segments.first(), segments.first()))
+        }
+    }
 }

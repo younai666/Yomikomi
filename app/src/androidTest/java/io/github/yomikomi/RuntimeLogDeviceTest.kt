@@ -14,6 +14,15 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class RuntimeLogDeviceTest {
+    @Test fun explicitTextDiagnosticsEscapeRecordsAndRedactTheActualKey() {
+        RunLog.text(LogModule.API, "trace_probe", 99, "OCR/译文\nforged record sk-private-probe-key custom-secret-probe", "custom-secret-probe")
+        val line = runtimeLogSnapshot().lineSequence().last { "API trace_probe" in it }
+        assertTrue(line.contains("OCR/译文\\nforged record"))
+        assertTrue(line.contains("[REDACTED]"))
+        assertFalse(line.contains("sk-private-probe-key"))
+        assertFalse(line.contains("custom-secret-probe"))
+    }
+
     @Test fun snapshotFlushesEarlierEventsAndOmitsSensitiveExceptionMessages() {
         val secrets = listOf("sk-log-test-key-123456", "OCR原文不要保存", "翻译内容不要保存", "https://private.example/secret")
         val error = IllegalStateException(secrets.joinToString(), IOException(secrets.joinToString()))

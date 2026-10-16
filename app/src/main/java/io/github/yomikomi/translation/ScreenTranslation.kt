@@ -25,6 +25,7 @@ data class TranslationRequest(
     val segments: List<TranslationSegment>,
     val previousScreen: PreviousScreen?,
     val prompt: PromptSettings = PromptSettings(),
+    val traceId: Long = 0,
 )
 
 fun interface TranslationEngine {
@@ -58,7 +59,7 @@ class ScreenTranslator(private val engine: TranslationEngine) {
     fun translate(
         recognized: List<RecognizedBlock>, source: String, target: String, scope: String, now: Long,
         prompt: PromptSettings = PromptSettings(),
-        appearance: ScreenAppearance? = null, backend: String = "local",
+        appearance: ScreenAppearance? = null, backend: String = "local", traceId: Long = 0,
     ): TranslatedScreen {
         val (draft, context) = synchronized(this) {
             configure(ContextConfig(source, target, prompt, backend))
@@ -102,14 +103,14 @@ class ScreenTranslator(private val engine: TranslationEngine) {
         RunLog.info(LogModule.CONTEXT, "decision", "reused" to if (context != null) 1 else 0,
             "blocks" to draft.blocks.size, "version" to draft.contextVersion)
         if (draft.blocks.isEmpty()) return draft
-        val request = TranslationRequest(source, target, draft.blocks.map { TranslationSegment(it.id, it.text) }, context, prompt)
+        val request = TranslationRequest(source, target, draft.blocks.map { TranslationSegment(it.id, it.text) }, context, prompt, traceId)
         // Slow model/network work must not hold the cache lock: app/config invalidations are immediate.
         val result = engine.translate(request)
         val translations = result.associate { it.id to it.text }
         require(result.size == draft.blocks.size && translations.keys == draft.blocks.map { it.id }.toSet()) {
             "Translation response must contain each requested ID exactly once"
         }
-        require(result.all { it.text.isNotBlank() }) { "Translation response contains empty text" }
+        result.forEach { TranslationProtocol.validateText(it.text) }
         return draft.copy(translations = translations)
     }
 
