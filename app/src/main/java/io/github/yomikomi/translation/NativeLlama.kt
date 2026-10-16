@@ -11,32 +11,31 @@ object NativeLlama {
     @Synchronized
     fun load(path: String) {
         if (loadedPath == path) return
+        loadedPath = null
         RunLog.measure(LogModule.INFERENCE, "load") { nativeLoad(path) }
         loadedPath = path
     }
 
     @Synchronized
-    fun generate(prompt: String, grammar: String): String {
+    fun generate(prompt: String, grammar: String, cancellationVersion: Long, reusePrefix: Boolean): String {
         check(loadedPath != null) { "请先下载并加载翻译模型" }
         return RunLog.measure(LogModule.INFERENCE, "generate") {
-            nativeGenerate(prompt.toByteArray(Charsets.UTF_8), grammar, 4096).toString(Charsets.UTF_8)
+            nativeGenerate(prompt.toByteArray(Charsets.UTF_8), grammar, 4096, cancellationVersion, reusePrefix).toString(Charsets.UTF_8)
         }
     }
 
     fun cancel() { RunLog.info(LogModule.INFERENCE, "cancel_requested"); nativeCancel() }
+    fun cancellationVersion(): Long = nativeCancellationVersion()
 
     // Called only with fixed stage codes and numeric counters; no native text crosses into diagnostics.
     @Suppress("unused")
     private fun onNativeStage(stage: Int, elapsedMs: Long, tokens: Int) {
-        RunLog.info(LogModule.INFERENCE, if (stage == 0) "prefill" else "decode",
+        RunLog.info(LogModule.INFERENCE, when (stage) { 0 -> "prefill"; 2 -> "prefix_reuse"; else -> "decode" },
             "elapsed_ms" to elapsedMs, "tokens" to tokens)
     }
 
-    @Synchronized
-    fun close() { nativeClose(); loadedPath = null }
-
     private external fun nativeLoad(path: String)
-    private external fun nativeGenerate(prompt: ByteArray, grammar: String, maxTokens: Int): ByteArray
+    private external fun nativeGenerate(prompt: ByteArray, grammar: String, maxTokens: Int, cancellationVersion: Long, reusePrefix: Boolean): ByteArray
     private external fun nativeCancel()
-    private external fun nativeClose()
+    private external fun nativeCancellationVersion(): Long
 }

@@ -21,6 +21,9 @@ import io.github.yomikomi.translation.ApiTranslationEngine
 import io.github.yomikomi.translation.ApiSecretStore
 import io.github.yomikomi.translation.ContextConfig
 import io.github.yomikomi.translation.ContextReset
+import io.github.yomikomi.translation.RecognizedBlock
+import io.github.yomikomi.translation.ScreenAppearance
+import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.logging.LogModule
 import io.github.yomikomi.logging.RunLog
 import java.util.concurrent.atomic.AtomicLong
@@ -31,6 +34,7 @@ class ScreenCaptureService : AccessibilityService() {
     @Volatile private var activeEngine: TranslationEngine? = null
     private val translator = ScreenTranslator { request -> checkNotNull(activeEngine).translate(request) }
     private val generation = AtomicLong()
+    private val expireContext = Runnable { translator.expire(SystemClock.elapsedRealtime()) }
     private var targetPackage = ""
     private var targetWindowId = -1
     private var busy = false
@@ -109,30 +113,31 @@ class ScreenCaptureService : AccessibilityService() {
             override fun onSuccess(result: ScreenshotResult) {
                 val capturedAt = SystemClock.elapsedRealtime()
                 val buffer = result.hardwareBuffer
-                val bitmap = try {
-                    val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("截屏缓冲区不可读")
-                    try { hardware.copy(Bitmap.Config.ARGB_8888, false) ?: error("截屏转换失败") }
-                    finally { hardware.recycle() }
-                } catch (error: Exception) {
-                    finishFailure(token, error.message ?: "截屏失败", error)
-                    return
-                } finally { buffer.close() }
-                RunLog.info(LogModule.CAPTURE, "screenshot", "request" to token,
-                    "width" to bitmap.width, "height" to bitmap.height, "elapsed_ms" to RunLog.elapsed(screenshotStart))
-                if (token != generation.get()) {
-                    RunLog.info(LogModule.CAPTURE, "stale_screenshot", "request" to token)
-                    bitmap.recycle(); return
-                }
                 AppRuntime.worker.execute {
                     try {
-                        if (token != generation.get()) return@execute
-                        check(bitmap.width == bounds.width() && bitmap.height == bounds.height()) { "屏幕方向已变化，请重试" }
-                        AppRuntime.ensureLoaded(ModelCatalog.ocr)
-                        phase(token, "识别中")
-                        val blocks = AppRuntime.ocr.recognize(bitmap, config.source, area)
-                        if (blocks.isEmpty()) translator.clear(ContextReset.EMPTY)
-                        check(blocks.isNotEmpty()) { "未识别到文字" }
-                        val appearance = screenAppearance(bitmap, area, blocks)
+                        val bitmap = try {
+                            if (token != generation.get()) return@execute
+                            val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("截屏缓冲区不可读")
+                            try { hardware.copy(Bitmap.Config.ARGB_8888, false) ?: error("截屏转换失败") }
+                            finally { hardware.recycle() }
+                        } finally { buffer.close() }
+                        val blocks: List<RecognizedBlock>
+                        val appearance: ScreenAppearance
+                        val backgrounds: Map<PixelBounds, Int>
+                        try {
+                            RunLog.info(LogModule.CAPTURE, "screenshot", "request" to token,
+                                "width" to bitmap.width, "height" to bitmap.height, "elapsed_ms" to RunLog.elapsed(screenshotStart))
+                            if (token != generation.get()) return@execute
+                            check(bitmap.width == bounds.width() && bitmap.height == bounds.height()) { "屏幕方向已变化，请重试" }
+                            AppRuntime.ensureLoaded(ModelCatalog.ocr, config.source)
+                            phase(token, "识别中")
+                            blocks = AppRuntime.ocr.recognize(bitmap, config.source, area)
+                            if (blocks.isEmpty()) translator.clear(ContextReset.EMPTY)
+                            check(blocks.isNotEmpty()) { "未识别到文字" }
+                            appearance = screenAppearance(bitmap, area, blocks)
+                            backgrounds = overlayBackgrounds(bitmap, blocks)
+                        } finally { bitmap.recycle() }
+                        // Keep only text, bounds and sampled colors during model loading/network inference.
                         if (token != generation.get()) return@execute
                         if (!config.api.enabled) AppRuntime.ensureLoaded(ModelCatalog.translation)
                         if (token != generation.get()) return@execute
@@ -142,15 +147,16 @@ class ScreenCaptureService : AccessibilityService() {
                         phase(token, "翻译中")
                         val screen = translator.translate(blocks, config.source, config.target, scope, capturedAt,
                             contextConfig.prompt, appearance, contextConfig.backend)
-                        val render = RunLog.measure(LogModule.OVERLAY, "prepare", "request" to token) { overlayBlocks(screen, bitmap) }
+                        val render = RunLog.measure(LogModule.OVERLAY, "prepare", "request" to token) {
+                            overlayBlocks(screen, backgrounds, config.textSize * resources.displayMetrics.scaledDensity)
+                        }
                         AppRuntime.main.post {
                             if (token == generation.get()) {
                                 try {
                                     overlay.show(render, config)
                                     translator.accept(screen, scope, SystemClock.elapsedRealtime())
-                                    AppRuntime.main.postDelayed({
-                                        translator.expire(SystemClock.elapsedRealtime())
-                                    }, ScreenTranslator.CONTEXT_TTL_MS)
+                                    AppRuntime.main.removeCallbacks(expireContext)
+                                    AppRuntime.main.postDelayed(expireContext, ScreenTranslator.CONTEXT_TTL_MS)
                                     busy = false
                                     AppRuntime.pipelinePhase = "已覆盖"
                                     RunLog.info(LogModule.CAPTURE, "completed", "request" to token, "blocks" to screen.blocks.size,
@@ -160,7 +166,7 @@ class ScreenCaptureService : AccessibilityService() {
                             }
                         }
                     } catch (error: Exception) { AppRuntime.main.post { finishFailure(token, error.message ?: "翻译失败", error) } }
-                    finally { activeEngine = null; bitmap.recycle() }
+                    finally { activeEngine = null }
                 }
             }
             override fun onFailure(errorCode: Int) {
@@ -246,6 +252,7 @@ class ScreenCaptureService : AccessibilityService() {
     }
     override fun onDestroy() {
         preferences.unregisterOnSharedPreferenceChangeListener(configurationListener)
+        AppRuntime.main.removeCallbacks(expireContext)
         cancel()
         translator.clear(ContextReset.SERVICE_STOP)
         RunLog.info(LogModule.PERMISSION, "accessibility_disconnected")

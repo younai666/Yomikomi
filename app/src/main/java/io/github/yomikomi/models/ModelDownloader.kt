@@ -90,8 +90,8 @@ class ModelDownloader(
                 check(partial.renameTo(destination)) { "模型部署失败" }
                 RunLog.info(LogModule.DOWNLOAD, "deployed", "index" to assetIndex)
                 completed += asset.bytes
-                progress(completed, "已下载")
             }
+            progress(completed, "已下载")
         }
 
     private fun open(address: String, offset: Long): HttpURLConnection {

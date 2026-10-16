@@ -27,7 +27,7 @@ class ContextContinuityDeviceTest {
 
     @Test fun realOcrKeepsScrollingContextAndRejectsUnrelatedPageOnSameFlatSurface() {
         AppRuntime.worker.submit {
-            AppRuntime.ensureLoaded(ModelCatalog.ocr)
+            AppRuntime.ensureLoaded(ModelCatalog.ocr, "英语")
             val requests = mutableListOf<TranslationRequest>()
             val translator = ScreenTranslator { request -> requests += request; request.segments }
             val pages = listOf(

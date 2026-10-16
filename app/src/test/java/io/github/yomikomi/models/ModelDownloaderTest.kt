@@ -75,4 +75,35 @@ class ModelDownloaderTest {
             .download(spec) { _, _ -> }
         assertArrayEquals(bytes, File(root, "model.bin").readBytes())
     }
+
+    @Test fun multiAssetDownloadIsCompleteOnlyAfterEveryAssetIsVerified() {
+        val second = asset.copy(path = "second.bin")
+        val phases = mutableListOf<Pair<Long, String>>()
+        val pack = spec.copy(assets = listOf(asset, second))
+        ModelDownloader(folder.root) { Response(bytes, 200) }.download(pack) { count, phase ->
+            phases += count to phase
+            if (phase == "已下载") {
+                assertTrue(File(folder.root, asset.path).isFile)
+                assertTrue(File(folder.root, second.path).isFile)
+            }
+        }
+        assertEquals(listOf(pack.bytes to "已下载"), phases.filter { it.second == "已下载" })
+        phases.clear()
+        ModelDownloader(folder.root) { error("Verified files must not download again") }.download(pack) { count, phase -> phases += count to phase }
+        assertEquals(pack.bytes to "已下载", phases.last())
+    }
+
+    @Test fun failureOfLaterAssetNeverPublishesCompletePack() {
+        val pack = spec.copy(assets = listOf(asset, asset.copy(path = "second.bin")))
+        val phases = mutableListOf<String>()
+        var transfers = 0
+        assertThrows(IllegalStateException::class.java) {
+            ModelDownloader(folder.root) {
+                Response(if (transfers++ == 0) bytes else ByteArray(bytes.size), 200)
+            }.download(pack) { _, phase -> phases += phase }
+        }
+        assertFalse("已下载" in phases)
+        assertTrue(File(folder.root, asset.path).isFile)
+        assertFalse(File(folder.root, "second.bin").exists())
+    }
 }

@@ -11,7 +11,7 @@ object TranslationPrompts {
     private val slots = Regex("\\{\\{(source_language|target_language|current_screen|previous_screen)\\}\\}")
 
     fun render(request: TranslationRequest): String {
-        val source = request.segments.joinToString("\n") { "[${it.id}] → ${it.text}" }
+        val source = request.segments.joinToString("\n") { "[${it.id}] 原文：${it.text}" }
         val previous = request.previousScreen?.takeIf { it.segments.isNotEmpty() }?.let { previous ->
             previous.segments.joinToString("\n\n") { segment ->
                 "原文：${segment.text}\n译文：${previous.translations.single { it.id == segment.id }.text}"
@@ -78,9 +78,10 @@ object TranslationPrompts {
             翻译方向：${request.sourceLanguage} → ${request.targetLanguage}。
             结合当前整屏与上一屏理解语境，但只输出当前屏。ID 顺序：${request.segments.joinToString("、") { "[${it.id}]" }}。
             每个 ID 恰好输出一行：[ID] → 译文。逐一保留 ID 和顺序，不遗漏、不新增、不合并、不拆分，译文不得为空。
-            仅翻译箭头右侧的文本，原样保留左侧标记。一行内写完该 ID 的译文，不在译文内部换行或重复 ID 标记。不得输出标题、代码围栏、分析、解释或单独复述上一屏。
+            将每个 ID 的原文翻译为目标语言，输出中只保留 ID 标记和译文，不要照抄原文。一行内写完该 ID 的译文，不在译文内部换行或重复 ID 标记。不得输出标题、代码围栏、分析、解释或单独复述上一屏。
         """.trimIndent()
-        return "$protocol\n\n$filled"
+        // End with the translation task, not source lines that the small local model may simply copy.
+        return "$protocol\n\n$filled\n\n请将以上当前屏的${request.sourceLanguage}文本翻译为${request.targetLanguage}，只输出 [ID] → 译文。"
     }
 }
 

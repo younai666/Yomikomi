@@ -13,6 +13,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import io.github.yomikomi.AppRuntime
 import io.github.yomikomi.MainActivity
+import io.github.yomikomi.RuntimeSettings
 import java.io.InterruptedIOException
 import java.util.concurrent.Executors
 import io.github.yomikomi.logging.LogModule
@@ -58,7 +59,7 @@ class ModelDownloadService : Service() {
                     if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
                         manager.notify(NOTIFICATION, notification(spec, bytes, phase))
                 }
-                AppRuntime.load(spec)
+                AppRuntime.load(spec, RuntimeSettings.read(this).source)
             } catch (error: Exception) {
                 val bytes = spec.assets.sumOf { asset ->
                     val complete = java.io.File(AppRuntime.root, asset.path)

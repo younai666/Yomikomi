@@ -111,6 +111,30 @@ class ApiTranslationDeviceTest {
         } finally { original.save(context); stored.delete() }
     }
 
+    @Test fun concurrentStoresNeverReturnAnotherOriginsKeyAndUnreadableStorageDoesNotCrashPresenceCheck() {
+        val testContext = object : android.content.ContextWrapper(context) {
+            override fun getNoBackupFilesDir() = File(context.cacheDir, "api-secret-concurrency-test").apply { mkdirs() }
+        }
+        val writer = ApiSecretStore(testContext)
+        val reader = ApiSecretStore(testContext)
+        val stored = File(testContext.noBackupFilesDir, "api-key")
+        val origins = listOf("https://left.example" to "left-fixture-key", "https://right.example" to "right-fixture-key")
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val writing = workers.submit { repeat(15) { origins.forEach { (origin, key) -> writer.save(origin, key) } } }
+            val reading = workers.submit { repeat(30) { origins.forEach { (origin, key) ->
+                val value = try { reader.read(origin) } catch (_: IllegalStateException) { null }
+                if (value != null) assertEquals(key, value)
+            } } }
+            writing.get(15, TimeUnit.SECONDS); reading.get(15, TimeUnit.SECONDS)
+            assertEquals("right-fixture-key", reader.read("https://right.example"))
+            assertFalse(reader.hasKey("invalid URL"))
+            assertTrue(stored.delete())
+            assertTrue(stored.mkdir())
+            assertFalse(reader.hasKey("https://right.example"))
+        } finally { workers.shutdownNow(); stored.delete() }
+    }
+
     /** Explicitly opt in; only the public fixture is sent. Never embed credentials in this test APK. */
     @Test fun liveDeepSeekTranslatesAllFiveModesWithPreviousContext() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("liveApi") == "true")

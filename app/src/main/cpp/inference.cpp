@@ -10,10 +10,12 @@
 #include <chrono>
 
 namespace {
-std::atomic<bool> canceled{false};
+std::atomic<jlong> cancellation_version{0};
+std::atomic<jlong> active_version{0};
 std::unique_ptr<llama_model, decltype(&llama_model_free)> model(nullptr, llama_model_free);
 std::unique_ptr<llama_context, decltype(&llama_free)> context(nullptr, llama_free);
-bool abort_inference(void *) { return canceled.load(); }
+std::vector<llama_token> cached_prompt;
+bool abort_inference(void *) { return cancellation_version.load() != active_version.load(); }
 using Clock = std::chrono::steady_clock;
 void report(JNIEnv * env, jobject receiver, int stage, Clock::time_point start, int tokens) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
@@ -37,7 +39,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject, jstring path) {
     context.reset();
     model.reset();
-    canceled = false;
+    cached_prompt.clear();
+    active_version = cancellation_version.load();
     // Our Kotlin boundary logs timings and sanitized failures, never upstream free-form text.
     llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
     llama_backend_init();
@@ -60,10 +63,11 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
-    JNIEnv * env, jobject receiver, jbyteArray input, jstring grammar, jint max_tokens) {
+    JNIEnv * env, jobject receiver, jbyteArray input, jstring grammar, jint max_tokens, jlong version, jboolean reuse_prefix) {
     try {
         if (!context) throw std::runtime_error("Model not loaded");
-        canceled = false;
+        active_version = version;
+        if (abort_inference(nullptr)) throw std::runtime_error("Canceled");
         std::string prompt(env->GetArrayLength(input), '\0');
         env->GetByteArrayRegion(input, 0, prompt.size(), reinterpret_cast<jbyte *>(prompt.data()));
         const llama_chat_message message{"user", prompt.c_str()};
@@ -78,7 +82,17 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
             throw std::runtime_error("Screen exceeds model context; reduce visible text");
         std::vector<llama_token> tokens(count);
         llama_tokenize(vocab, formatted.data(), length, tokens.data(), count, true, true);
-        llama_memory_clear(llama_get_memory(context.get()), true);
+        auto memory = llama_get_memory(context.get());
+        int shared = 0;
+        if (reuse_prefix) {
+            // Re-evaluate at least the final prompt token: the current logits may be from an old response.
+            while (shared < count - 1 && shared < static_cast<int>(cached_prompt.size()) &&
+                   tokens[shared] == cached_prompt[shared]) ++shared;
+        }
+        if (shared == 0 || !llama_memory_seq_rm(memory, 0, shared, -1)) {
+            llama_memory_clear(memory, true);
+            shared = 0;
+        }
         std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(
             llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
         auto grammar_text = utf(env, grammar);
@@ -91,18 +105,20 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
         auto prefill_start = Clock::now();
-        for (int pos = 0; pos < count; pos += 256) {
-            if (canceled) throw std::runtime_error("Canceled");
+        report(env, receiver, 2, prefill_start, shared);
+        for (int pos = shared; pos < count; pos += 256) {
+            if (abort_inference(nullptr)) throw std::runtime_error("Canceled");
             auto batch = llama_batch_get_one(tokens.data() + pos, std::min(256, count - pos));
             if (llama_decode(context.get(), batch) != 0) throw std::runtime_error("Prompt evaluation failed");
         }
-        report(env, receiver, 0, prefill_start, count);
+        cached_prompt = std::move(tokens);
+        report(env, receiver, 0, prefill_start, count - shared);
         auto decode_start = Clock::now();
         int generated = 0;
         std::string output;
         bool finished = false;
         for (int i = 0; i < max_tokens; ++i) {
-            if (canceled) throw std::runtime_error("Canceled");
+            if (abort_inference(nullptr)) throw std::runtime_error("Canceled");
             llama_token token = llama_sampler_sample(sampler.get(), context.get(), -1);
             if (llama_vocab_is_eog(vocab, token)) { finished = true; break; }
             char buffer[256];
@@ -118,10 +134,14 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
         auto result = env->NewByteArray(output.size());
         env->SetByteArrayRegion(result, 0, output.size(), reinterpret_cast<const jbyte *>(output.data()));
         return result;
-    } catch (const std::exception & error) { fail(env, error.what()); return nullptr; }
+    } catch (const std::exception & error) {
+        cached_prompt.clear();
+        if (context) llama_memory_clear(llama_get_memory(context.get()), true);
+        fail(env, error.what()); return nullptr;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_io_github_yomikomi_translation_NativeLlama_nativeCancel(JNIEnv *, jobject) { canceled = true; }
-extern "C" JNIEXPORT void JNICALL
-Java_io_github_yomikomi_translation_NativeLlama_nativeClose(JNIEnv *, jobject) { context.reset(); model.reset(); }
+Java_io_github_yomikomi_translation_NativeLlama_nativeCancel(JNIEnv *, jobject) { cancellation_version.fetch_add(1); }
+extern "C" JNIEXPORT jlong JNICALL
+Java_io_github_yomikomi_translation_NativeLlama_nativeCancellationVersion(JNIEnv *, jobject) { return cancellation_version.load(); }

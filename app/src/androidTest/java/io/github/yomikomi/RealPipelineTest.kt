@@ -11,6 +11,8 @@ import io.github.yomikomi.translation.HyMtTranslationEngine
 import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.translation.RecognizedBlock
 import io.github.yomikomi.translation.ScreenTranslator
+import io.github.yomikomi.translation.TranslationRequest
+import io.github.yomikomi.translation.TranslationSegment
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,9 +20,46 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class RealPipelineTest {
+    @Test fun actualHyMtTranslatesJapaneseWholeScreenIntoChineseRatherThanCopyingSource() {
+        AppRuntime.worker.submit {
+            AppRuntime.ensureLoaded(ModelCatalog.translation)
+            val segments = listOf("こんにちは。", "今日はいい天気です。", "本を読みましょう。")
+                .mapIndexed { index, text -> TranslationSegment("b${index + 1}", text) }
+            val result = HyMtTranslationEngine().translate(TranslationRequest(
+                "日语", "简体中文", segments, null))
+            android.util.Log.i("YomikomiPipelineTest", "Public Japanese fixture: $result")
+            assertEquals(segments.map { it.id }, result.map { it.id })
+            assertTrue(result.toString(), result.first().text.contains("好"))
+            assertTrue(result.toString(), result[1].text.contains("天气"))
+            assertTrue(result.toString(), result[2].text.contains("读"))
+            result.zip(segments).forEach { (translated, source) -> assertNotEquals(source.text, translated.text) }
+        }.get(90, TimeUnit.SECONDS)
+    }
+
+    @Test fun loadingSelectedOcrLanguageDoesNotInitializeOtherLanguagesOrReloadItForRecognition() {
+        AppRuntime.worker.submit {
+            val ocr = AppRuntime.ocr
+            ocr.load("日语")
+            fun initializationCount() = Regex("INFO OCR initialize.started").findAll(runtimeLogSnapshot()).count()
+            val before = initializationCount()
+            AppRuntime.ensureLoaded(ModelCatalog.ocr, "英语")
+            assertEquals(before + 1, initializationCount())
+            AppRuntime.ensureLoaded(ModelCatalog.ocr, "英语")
+            val image = Bitmap.createBitmap(500, 160, Bitmap.Config.ARGB_8888)
+            try {
+                Canvas(image).apply {
+                    drawColor(Color.WHITE)
+                    drawText("Hello, library.", 30f, 90f, Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 40f })
+                }
+                assertTrue(ocr.recognize(image, "英语", Rect(0, 0, 500, 160)).isNotEmpty())
+                assertEquals(before + 1, initializationCount())
+            } finally { image.recycle() }
+        }.get(30, TimeUnit.SECONDS)
+    }
+
     @Test fun ocrIgnoresMaskedSystemBarsAndPreservesGlobalCoordinates() {
         AppRuntime.worker.submit {
-            AppRuntime.ensureLoaded(ModelCatalog.ocr)
+            AppRuntime.ensureLoaded(ModelCatalog.ocr, "英语")
             val image = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
             try {
                 Canvas(image).apply {
@@ -40,7 +79,7 @@ class RealPipelineTest {
     }
     @Test fun ocrReadsThreeScriptsAndReturnsPixelCoordinates() {
         AppRuntime.worker.submit {
-            AppRuntime.ensureLoaded(ModelCatalog.ocr)
+            AppRuntime.ensureLoaded(ModelCatalog.ocr, "英语")
             listOf("英语" to "This is a quiet library.", "日语" to "今日はいい天気です。", "俄语" to "Это тихая библиотека.")
                 .forEach { (language, text) ->
                     val image = Bitmap.createBitmap(1080, 800, Bitmap.Config.ARGB_8888)

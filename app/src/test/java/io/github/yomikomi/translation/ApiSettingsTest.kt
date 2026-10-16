@@ -28,7 +28,7 @@ class ApiSettingsTest {
         val rendered = TranslationPrompts.render(request)
         assertTrue(rendered.contains("原文：Alice calls it Frost."))
         assertTrue(rendered.contains("译文：爱丽丝称它为霜华。"))
-        assertTrue(rendered.endsWith("[b7] → Alice picked it up."))
+        assertTrue(rendered.contains("[b7] 原文：Alice picked it up.\n\n请将以上当前屏的英语文本翻译为简体中文"))
         assertFalse(rendered.contains("[b99]"))
     }
 }

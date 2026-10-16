@@ -20,5 +20,4 @@ object ModelCatalog {
             "e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225"),
     ))
     val all = listOf(ocr, translation)
-    fun get(id: String) = all.single { it.id == id }
 }

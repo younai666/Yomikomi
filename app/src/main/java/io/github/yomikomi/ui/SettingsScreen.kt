@@ -11,6 +11,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -38,6 +40,7 @@ internal fun SettingsScreen(state: UiState, open: (Panel) -> Unit) {
     Spacer(Modifier.height(24.dp))
     SectionLabel("Overlay")
     Spacer(Modifier.height(12.dp))
+    var opacity by remember(state.opacity) { mutableFloatStateOf(state.opacity) }
     val sliderInteraction = remember { MutableInteractionSource() }
     val dragging by sliderInteraction.collectIsDraggedAsState()
     val pressing by sliderInteraction.collectIsPressedAsState()
@@ -45,11 +48,12 @@ internal fun SettingsScreen(state: UiState, open: (Panel) -> Unit) {
         tween(YomiMotion.change, easing = YomiMotion.ease), label = "slider_thumb")
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("不透明度", Modifier.weight(1f), color = yomiColors.ink, fontSize = 16.sp)
-        Text("${(state.opacity * 100).roundToInt()}%", color = yomiColors.muted, fontSize = 14.sp)
+        Text("${(opacity * 100).roundToInt()}%", color = yomiColors.muted, fontSize = 14.sp)
     }
     Slider(
-        value = state.opacity,
-        onValueChange = { state.opacity = it },
+        value = opacity,
+        onValueChange = { opacity = it },
+        onValueChangeFinished = { state.opacity = opacity },
         valueRange = 0.3f..1f,
         interactionSource = sliderInteraction,
         modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Overlay 不透明度" },
@@ -63,7 +67,7 @@ internal fun SettingsScreen(state: UiState, open: (Panel) -> Unit) {
             Canvas(Modifier.fillMaxWidth().height(3.dp)) {
                 val middle = size.height / 2
                 drawLine(colors.line, Offset(0f, middle), Offset(size.width, middle), size.height, StrokeCap.Round)
-                drawLine(colors.accent, Offset(0f, middle), Offset(size.width * ((state.opacity - 0.3f) / 0.7f), middle), size.height, StrokeCap.Round)
+                drawLine(colors.accent, Offset(0f, middle), Offset(size.width * ((opacity - 0.3f) / 0.7f), middle), size.height, StrokeCap.Round)
             }
         },
     )

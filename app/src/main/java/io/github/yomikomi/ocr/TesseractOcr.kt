@@ -14,10 +14,17 @@ class TesseractOcr(private val root: File) {
     private var api: TessBaseAPI? = null
     private var language: String? = null
 
-    fun load() = selectLanguage("eng+jpn+rus")
+    fun load(source: String) = selectLanguage(when (source) {
+        "日语" -> "jpn"
+        "英语" -> "eng"
+        "俄语" -> "rus"
+        "自动检测" -> "eng+jpn+rus"
+        else -> error("当前 OCR 支持日语、英语和俄语")
+    })
 
     private fun selectLanguage(languages: String) {
         if (language == languages) return
+        RunLog.measure(LogModule.OCR, "initialize") {
         api?.recycle()
         api = null
         language = null
@@ -29,6 +36,7 @@ class TesseractOcr(private val root: File) {
         candidate.pageSegMode = TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT
         api = candidate
         language = languages
+        }
     }
 
     fun recognize(bitmap: Bitmap, source: String, area: Rect): List<RecognizedBlock> =
@@ -37,13 +45,7 @@ class TesseractOcr(private val root: File) {
         }
 
     private fun recognizeImage(bitmap: Bitmap, source: String, area: Rect): List<RecognizedBlock> {
-        selectLanguage(when (source) {
-            "日语" -> "jpn"
-            "英语" -> "eng"
-            "俄语" -> "rus"
-            "自动检测" -> "eng+jpn+rus"
-            else -> error("当前 OCR 支持日语、英语和俄语")
-        })
+        load(source)
         val engine = checkNotNull(api)
         // Crop before thresholding. Black system-bar masks can skew Tesseract's page segmentation.
         val cropped = Bitmap.createBitmap(bitmap, area.left, area.top, area.width(), area.height())

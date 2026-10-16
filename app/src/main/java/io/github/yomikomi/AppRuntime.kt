@@ -19,7 +19,7 @@ import io.github.yomikomi.logging.RunLog
 import java.io.File
 import java.util.concurrent.Executors
 
-data class ModelStatus(val phase: String, val bytes: Long, val total: Long, val error: String? = null) {
+data class ModelStatus(val phase: String, val bytes: Long, val error: String? = null) {
     val busy get() = phase in listOf("下载中", "校验中", "加载中")
 }
 
@@ -58,37 +58,40 @@ object AppRuntime {
                 val file = File(root, asset.path)
                 if (file.length() == asset.bytes) asset.bytes else File(root, "${asset.path}.part").length()
             }
-            spec.id to ModelStatus(if (complete) "已下载" else if (bytes > 0) "已暂停" else "未下载", bytes, spec.bytes)
+            spec.id to ModelStatus(if (complete) "已下载" else if (bytes > 0) "已暂停" else "未下载", bytes)
         }
     }
 
     fun status(spec: ModelSpec) = models.getValue(spec.id)
     fun update(spec: ModelSpec, phase: String, bytes: Long, error: String? = null) {
-        main.post { models = models + (spec.id to ModelStatus(phase, bytes, spec.bytes, error)) }
+        main.post { models = models + (spec.id to ModelStatus(phase, bytes, error)) }
     }
 
     /** Called only on worker. On-disk deployment is reverified once per process before use. */
-    fun ensureLoaded(spec: ModelSpec) {
-        if (spec.id in ready) return
-        update(spec, "加载中", spec.bytes)
+    fun ensureLoaded(spec: ModelSpec, source: String = "自动检测") {
         try {
-            RunLog.measure(LogModule.MODEL, "load", "kind" to if (spec == ModelCatalog.ocr) 0 else 1) {
-                val verifier = ModelDownloader(root)
-                RunLog.measure(LogModule.MODEL, "verify", "bytes" to spec.bytes) {
-                    check(spec.assets.all { verifier.valid(File(root, it.path), it) }) { "请先下载完整模型" }
+            if (spec.id !in ready) {
+                update(spec, "加载中", spec.bytes)
+                RunLog.measure(LogModule.MODEL, "load", "kind" to if (spec == ModelCatalog.ocr) 0 else 1) {
+                    val verifier = ModelDownloader(root)
+                    RunLog.measure(LogModule.MODEL, "verify", "bytes" to spec.bytes) {
+                        check(spec.assets.all { verifier.valid(File(root, it.path), it) }) { "请先下载完整模型" }
+                    }
+                    if (spec == ModelCatalog.ocr) ocr.load(source)
+                    else NativeLlama.load(File(root, spec.assets.single().path).absolutePath)
                 }
-                if (spec == ModelCatalog.ocr) ocr.load()
-                else NativeLlama.load(File(root, spec.assets.single().path).absolutePath)
-            }
+            } else if (spec == ModelCatalog.ocr) ocr.load(source)
             ready += spec.id
             update(spec, "已加载", spec.bytes)
         } catch (error: Exception) {
+            ready.remove(spec.id)
             update(spec, "加载失败", 0, error.message)
             throw error
         }
     }
 
-    fun load(spec: ModelSpec) {
-        worker.execute { try { ensureLoaded(spec) } catch (_: Exception) { /* Exposed through ModelStatus. */ } }
+    fun load(spec: ModelSpec, source: String) {
+        update(spec, "加载中", spec.bytes)
+        worker.execute { try { ensureLoaded(spec, source) } catch (_: Exception) { /* Exposed through ModelStatus. */ } }
     }
 }

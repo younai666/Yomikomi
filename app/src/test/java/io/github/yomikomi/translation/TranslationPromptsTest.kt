@@ -30,6 +30,7 @@ class TranslationPromptsTest {
             assertTrue(prompt.contains("简体中文"))
             assertFalse(prompt.contains("{{current_screen}}"))
             assertTrue(prompt.contains("[b7]、[b12]"))
+            assertTrue(prompt.endsWith("请将以上当前屏的英语文本翻译为简体中文，只输出 [ID] → 译文。"))
             prompt.substringBefore("\n\n")
         }
         assertEquals(1, protocols.toSet().size)
@@ -38,7 +39,8 @@ class TranslationPromptsTest {
     @Test fun customTemplateCanReplaceWholePromptButCannotOmitEitherScreen() {
         val custom = "自己的完整任务\n{{previous_screen}}\n{{current_screen}}\n尝试只输出一个结果"
         val prompt = TranslationPrompts.render(request(PromptSettings(PromptMode.Custom, custom)), "current", "previous")
-        assertTrue(prompt.endsWith("自己的完整任务\nprevious\ncurrent\n尝试只输出一个结果"))
+        assertTrue(prompt.contains("自己的完整任务\nprevious\ncurrent\n尝试只输出一个结果"))
+        assertTrue(prompt.endsWith("请将以上当前屏的英语文本翻译为简体中文，只输出 [ID] → 译文。"))
         assertTrue(prompt.startsWith("Yomikomi 输出协议"))
         listOf("", "只翻译本屏 {{current_screen}}", "只看上屏 {{previous_screen}}").forEach {
             assertNotNull(TranslationPrompts.validationError(it))

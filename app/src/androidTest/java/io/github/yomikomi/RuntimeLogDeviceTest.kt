@@ -14,23 +14,13 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class RuntimeLogDeviceTest {
-    private fun export(): String {
-        val output = ByteArrayOutputStream()
-        val completed = CountDownLatch(1)
-        var success = false
-        RunLog.export({ output }) { success = it; completed.countDown() }
-        assertTrue(completed.await(5, TimeUnit.SECONDS))
-        assertTrue(success)
-        return output.toString("UTF-8")
-    }
-
     @Test fun snapshotFlushesEarlierEventsAndOmitsSensitiveExceptionMessages() {
         val secrets = listOf("sk-log-test-key-123456", "OCR原文不要保存", "翻译内容不要保存", "https://private.example/secret")
         val error = IllegalStateException(secrets.joinToString(), IOException(secrets.joinToString()))
         error.addSuppressed(IllegalArgumentException(secrets.joinToString()))
         RunLog.info(LogModule.OCR, "privacy_probe", "blocks" to 3, "elapsed_ms" to 17)
         RunLog.error(LogModule.API, "privacy_probe", error)
-        val text = export()
+        val text = runtimeLogSnapshot()
         assertTrue(text.contains("INFO OCR privacy_probe blocks=3 elapsed_ms=17"))
         assertTrue(text.contains("ERROR API privacy_probe"))
         assertTrue(text.contains("Caused by: java.io.IOException"))
@@ -46,8 +36,18 @@ class RuntimeLogDeviceTest {
         } }) { success = it; completed.countDown() }
         assertTrue(completed.await(5, TimeUnit.SECONDS))
         assertFalse(success)
-        val text = export()
+        val text = runtimeLogSnapshot()
         assertTrue(text.contains("ERROR EXPORT failed"))
         assertFalse(text.contains("PRIVATE_EXPORT_DESTINATION"))
     }
+}
+
+internal fun runtimeLogSnapshot(): String {
+    val output = ByteArrayOutputStream()
+    val completed = CountDownLatch(1)
+    var success = false
+    RunLog.export({ output }) { success = it; completed.countDown() }
+    assertTrue(completed.await(5, TimeUnit.SECONDS))
+    assertTrue(success)
+    return output.toString("UTF-8")
 }

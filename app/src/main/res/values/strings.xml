@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Yomikomi</string>
-    <string name="accessibility_description">点按快捷磁贴后截取当前屏幕，在设备上识别和翻译文字，并在原位置覆盖译文。截屏和文字不会上传。再次点按磁贴取消或收起译文。</string>
+    <string name="accessibility_description">点按快捷磁贴后截取屏幕、识别文字并原位覆盖译文。截屏不会上传；启用第三方 API 时，文本会发送至所选服务。再次点按磁贴取消或收起译文。</string>
 </resources>

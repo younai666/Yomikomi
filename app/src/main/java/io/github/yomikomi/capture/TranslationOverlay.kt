@@ -16,14 +16,15 @@ import androidx.annotation.RequiresApi
 import android.annotation.SuppressLint
 import io.github.yomikomi.RuntimeSettings
 import io.github.yomikomi.translation.PixelBounds
+import io.github.yomikomi.translation.RecognizedBlock
 import io.github.yomikomi.translation.TranslatedScreen
 import io.github.yomikomi.logging.LogModule
 import io.github.yomikomi.logging.RunLog
 
-data class OverlayBlock(val bounds: PixelBounds, val text: String, val background: Int)
+data class OverlayBlock(val bounds: PixelBounds, val background: Int, val layout: StaticLayout)
 
 /** Sample only the perimeter, avoiding the original glyphs when choosing a covering color. */
-fun overlayBlocks(screen: TranslatedScreen, bitmap: Bitmap): List<OverlayBlock> = screen.blocks.map { block ->
+fun overlayBackgrounds(bitmap: Bitmap, blocks: List<RecognizedBlock>): Map<PixelBounds, Int> = blocks.associate { block ->
     val b = block.bounds
     val samples = mutableListOf<Int>()
     for (step in 0..8) {
@@ -35,7 +36,27 @@ fun overlayBlocks(screen: TranslatedScreen, bitmap: Bitmap): List<OverlayBlock> 
         samples += bitmap.getPixel((b.right + 3).coerceIn(0, bitmap.width - 1), y)
     }
     fun median(channel: (Int) -> Int) = samples.map(channel).sorted()[samples.size / 2]
-    OverlayBlock(b, screen.translations.getValue(block.id), Color.rgb(median(Color::red), median(Color::green), median(Color::blue)))
+    b to Color.rgb(median(Color::red), median(Color::green), median(Color::blue))
+}
+
+/** Prepare immutable text layouts on the pipeline worker; the main thread only attaches/draws the view. */
+fun overlayBlocks(screen: TranslatedScreen, backgrounds: Map<PixelBounds, Int>, textSize: Float): List<OverlayBlock> =
+    screen.blocks.map { block ->
+        val color = backgrounds.getValue(block.bounds)
+        val text = screen.translations.getValue(block.id)
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = if ((Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000 < 140)
+                Color.rgb(240, 238, 233) else Color.rgb(28, 28, 27)
+            this.textSize = minOf(textSize, block.bounds.height * 0.9f)
+        }
+        fun layout() = StaticLayout.Builder.obtain(text, 0, text.length, paint, block.bounds.width)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1f).build()
+        var result = layout()
+        while (result.height > block.bounds.height && paint.textSize > 2f) {
+            paint.textSize = maxOf(2f, paint.textSize - 1f)
+            result = layout()
+        }
+        OverlayBlock(block.bounds, color, result)
 }
 
 @RequiresApi(30)
@@ -47,7 +68,7 @@ class TranslationOverlay(private val context: Context) {
     @SuppressLint("RtlHardcoded") // Coordinates are physical display pixels, independent of locale.
     fun show(blocks: List<OverlayBlock>, settings: RuntimeSettings) = RunLog.measure(LogModule.OVERLAY, "show", "blocks" to blocks.size) {
         hide()
-        val layer = OverlayView(context, blocks, settings)
+        val layer = OverlayView(context, blocks, (settings.opacity * 255).toInt())
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -71,32 +92,14 @@ class TranslationOverlay(private val context: Context) {
         view = null
     }
 
-    private class OverlayView(context: Context, blocks: List<OverlayBlock>, settings: RuntimeSettings) : View(context) {
+    private class OverlayView(context: Context, private val blocks: List<OverlayBlock>, private val opacity: Int) : View(context) {
         private val background = Paint()
         private val location = IntArray(2)
-        private data class Label(val block: OverlayBlock, val layout: StaticLayout)
-        private val labels = blocks.map { block ->
-            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                val color = block.background
-                this.color = if ((Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000 < 140)
-                    Color.rgb(240, 238, 233) else Color.rgb(28, 28, 27)
-                textSize = minOf(settings.textSize * resources.displayMetrics.scaledDensity, block.bounds.height * 0.9f)
-            }
-            fun layout() = StaticLayout.Builder.obtain(block.text, 0, block.text.length, paint, block.bounds.width)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1f).build()
-            var result = layout()
-            while (result.height > block.bounds.height && paint.textSize > 2f) {
-                paint.textSize = maxOf(2f, paint.textSize - 1f)
-                result = layout()
-            }
-            Label(block, result)
-        }
-        private val opacity = (settings.opacity * 255).toInt()
         init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS }
         override fun onDraw(canvas: Canvas) {
             getLocationOnScreen(location)
             canvas.translate(-location[0].toFloat(), -location[1].toFloat())
-            labels.forEach { (block, layout) ->
+            blocks.forEach { block ->
                 val b = block.bounds
                 background.color = block.background
                 background.alpha = opacity
@@ -104,7 +107,7 @@ class TranslationOverlay(private val context: Context) {
                 canvas.save()
                 canvas.clipRect(b.left, b.top, b.right, b.bottom)
                 canvas.translate(b.left.toFloat(), b.top.toFloat())
-                layout.draw(canvas)
+                block.layout.draw(canvas)
                 canvas.restore()
             }
         }
