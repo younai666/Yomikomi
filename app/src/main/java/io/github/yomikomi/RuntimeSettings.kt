@@ -5,12 +5,15 @@ import io.github.yomikomi.translation.PromptMode
 import io.github.yomikomi.translation.PromptSettings
 import io.github.yomikomi.translation.ApiSettings
 import io.github.yomikomi.translation.ApiProvider
+import io.github.yomikomi.translation.ContextConfig
 
 data class RuntimeSettings(
     val source: String, val target: String, val opacity: Float, val textSize: Int, val autoCollapse: Boolean,
     val prompt: PromptSettings = PromptSettings(),
     val api: ApiSettings = ApiSettings(),
 ) {
+    val contextConfig get() = ContextConfig(source, target, if (api.enabled) api.prompt else prompt,
+        if (api.enabled) "api:${api.provider.key}:${api.endpoint}:${api.model}" else "local")
     companion object {
         fun read(context: Context): RuntimeSettings {
             val prefs = context.getSharedPreferences("settings", 0)

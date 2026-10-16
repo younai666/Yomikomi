@@ -43,7 +43,7 @@ class ScreenTranslatorTest {
         val translator = ScreenTranslator { r -> requests += r; r.segments }
         val first = translator.translate((0..5).map { block("$it".repeat(500), 10, it * 50) }, "英语", "中文", "app", 0)
         translator.accept(first, "app", 0)
-        val next = listOf(block("next", 10, 10))
+        val next = listOf(block("0".repeat(500), 10, 10), block("1".repeat(500), 10, 60))
         translator.translate(next, "英语", "中文", "app", 20)
         val previous = requests.last().previousScreen!!
         assertTrue((previous.segments + previous.translations).sumOf { it.text.length } <= ScreenTranslator.CONTEXT_CHARS)

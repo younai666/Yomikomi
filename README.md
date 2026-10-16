@@ -21,7 +21,7 @@ Screen capture requires **Android 11 / API 30+**. The settings UI remains instal
 - Text lines retain physical display coordinates. Recursive whitespace cuts establish horizontal reading order. Session-local IDs match repeated text by geometry and survive small OCR coordinate changes.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) runs the actual model through JNI on a background worker. Each screen is submitted once as ordered `[ID] → source text` lines. Output retains these markers with translated text. Previous-screen source/translation pairs provide context without introducing old IDs. The native grammar fixes every current ID and its order; parsing rejects missing, extra, reordered, empty or embedded protocol markers before rendering.
 - API translation uses one non-streaming OpenAI-compatible Chat Completions POST per screen, sharing the prompt renderer and ID parser with local translation. DeepSeek uses non-thinking mode. Truncated, malformed or incorrectly mapped output never reaches the overlay. Requests have connect/read timeouts and are disconnected on cancellation. Errors are reported without silently switching engines or retrying paid requests.
-- The preceding displayed screen supplies up to 2,400 characters of source/translation context for 30 seconds. Context stays in memory and is isolated by app, language direction and backend/endpoint/model. Local KV memory is cleared before each request.
+- The preceding displayed screen supplies up to 2,400 characters of source/translation context for 30 seconds. It is reused only for continuous pages in the same package, with the same language direction, active prompt and backend/endpoint/model. Local KV memory is cleared before each request.
 - A touch-through accessibility overlay covers recognized source bounds with sampled background colors and fitted translations. Scrolling/window changes cancel stale work; app/window changes dismiss overlays. Rotation cancels work. Protected content cannot be translated.
 - No fake translation path, saved screenshots, translation history, MediaProjection fallback, or broad storage/overlay permission. In local mode, text stays on the device and internet access is used for model downloads. When API mode is enabled, recognized text and its short-term context are sent to the configured HTTPS service. Screenshots are never uploaded.
 
@@ -34,6 +34,18 @@ API keys are encrypted with Android Keystore AES-GCM and stored under app-privat
 Custom mode edits the complete template and saves locally. Available placeholders are `{{source_language}}`, `{{target_language}}`, `{{previous_screen}}` and `{{current_screen}}`. Both screen placeholders must remain so the model receives the whole page and its short-term context. The app prefixes the current language direction and output contract for every mode; custom wording cannot remove the native ID/order constraints. Editing can be dismissed without changing the selected mode.
 
 **第三方 API → 翻译提示词** offers the same four presets and full custom editor. API and local prompt selections/custom drafts are independent. API prompt changes are saved together with the provider form using **完成**; every response must pass the same current-ID and ordering checks.
+
+## Short-term context boundaries
+
+Continuity is a small deterministic heuristic, shared by local and API translation:
+
+- Same actual `packageName`, less than 30 seconds since the preceding translation was displayed, and unchanged source/target language, active preset/custom template and backend. Changing any of these clears context, including changing away and back without translating. Editing an inactive prompt draft or Overlay preferences does not reset the active translation context.
+- The OCR body must overlap enough: length-weighted token Dice score at least 0.35, with at least four shared characters of evidence. Latin/Cyrillic words are case/punctuation insensitive; Japanese uses adjacent character pairs. When screenshot bounds are available, the top/bottom eighths are excluded to avoid matching only toolbars.
+- Alternatively, a detailed background scene may remain almost unchanged while dialogue changes. A 12×16 RGB grid samples the content area, excluding OCR glyphs and top/bottom chrome. At least 75% of body cells must be comparable and 90% of those must differ by no more than 18 RGB levels on average; aspect ratios must agree within 3%. At least a quarter of usable horizontal neighbour pairs must differ by 24 levels, so a shared flat background or small toolbar cannot establish visual continuity.
+
+Only the preceding **displayed** page and this tiny colour grid stay in memory; screenshots are recycled and never cached. App/config changes clear immediately without waiting for model/network work. Expiry runs on the main handler, not the busy inference worker. A rejected page erases the older cache before translation, so a failed unrelated page cannot revive stale context. Results invalidated while in flight cannot repopulate the cache. A timer for the older page may expire it while a new valid translation is running without discarding that new result.
+
+This is conservative evidence of continuity, not semantic understanding: a related page with entirely new words and substantially different imagery starts fresh. No extra AI request, embedding model or persistent history is used.
 
 ## Model downloads
 
@@ -68,6 +80,7 @@ adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell am instrument -w -e class io.github.yomikomi.RealPipelineTest io.github.yomikomi.test/androidx.test.runner.AndroidJUnitRunner
 adb shell am instrument -w -e class io.github.yomikomi.TranslationPromptDeviceTest io.github.yomikomi.test/androidx.test.runner.AndroidJUnitRunner
 adb shell am instrument -w -e class io.github.yomikomi.ApiTranslationDeviceTest io.github.yomikomi.test/androidx.test.runner.AndroidJUnitRunner
+adb shell am instrument -w -e class io.github.yomikomi.ContextContinuityDeviceTest io.github.yomikomi.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 Device tests use real OCR and Hy-MT2, checking Japanese/English/Russian, masked system bars, pixel coordinates, ID mapping, previous-screen context, all five prompt modes and persisted prompt settings. The test APK contains a standalone `io.github.yomikomi.fixture.ScreenFixtureActivity` for manual tile-to-overlay checks; it is not shipped in the app. Avoid `uiautomator dump` or accessibility-tree inspection tools during these checks: they can suppress the app's accessibility service. Mobile MCP's persistent `com.mobilenext.mobilecli.DeviceServer` also holds this automation connection; stop that device-side server before verifying the accessibility pipeline. ADB screenshots and logs are safe for this stage.
@@ -75,6 +88,8 @@ Device tests use real OCR and Hy-MT2, checking Japanese/English/Russian, masked 
 API device tests cover whole-screen serialization, all prompts, ID parsing, HTTP errors/redirects, truncated output, cancellation, origin-bound encrypted key storage and independent settings. Live DeepSeek calls are opt-in: after saving a DeepSeek key in the app, run the API test class with `-e liveApi true` to translate a public two-block fixture in all five modes. This uses the supplied API account and sends only the fixture and its public context. No credentials are embedded in either APK or test source.
 
 The external fixture accepts `--ez dark true` for dark-background OCR/overlay checks. After displaying a translation, reopen Yomikomi: its activity start cancels pending work, removes the overlay immediately and clears short-term context. Accessibility events from the app's own overlay remain ignored so it cannot dismiss itself.
+
+For continuity checks, the fixture also accepts `--es page story1`, `story2` and `unrelated`; `--activity-single-top` updates the same activity. Hide the existing overlay with the tile before each change, then translate again. `story1 → story2` should log `context=true`; returning from another app or moving to `unrelated` should log `context=false`. No OCR/translated content is logged by this diagnostic.
 
 The generated launcher artwork and its production prompt are included in [`app/src/main/res/drawable-nodpi/yomikomi_wordmark.png`](app/src/main/res/drawable-nodpi/yomikomi_wordmark.png) and [`docs/launcher-icon-prompt.txt`](docs/launcher-icon-prompt.txt). Android 8+ uses an adaptive icon with lettering inset into the circular safe zone; older versions use the square artwork.
 

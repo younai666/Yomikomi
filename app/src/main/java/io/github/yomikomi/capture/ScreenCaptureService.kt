@@ -1,6 +1,7 @@
 package io.github.yomikomi.capture
 
 import android.accessibilityservice.AccessibilityService
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
@@ -19,6 +20,7 @@ import io.github.yomikomi.translation.ScreenTranslator
 import io.github.yomikomi.translation.TranslationEngine
 import io.github.yomikomi.translation.ApiTranslationEngine
 import io.github.yomikomi.translation.ApiSecretStore
+import io.github.yomikomi.translation.ContextConfig
 import java.util.concurrent.atomic.AtomicLong
 
 @RequiresApi(30)
@@ -32,10 +34,24 @@ class ScreenCaptureService : AccessibilityService() {
     private var busy = false
     private var waitingForShade = false
     private var settings: RuntimeSettings? = null
+    private lateinit var preferences: SharedPreferences
+    private lateinit var observedConfig: ContextConfig
+    private val configurationListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        val updated = RuntimeSettings.read(this).contextConfig
+        if (!observedConfig.matches(updated)) {
+            cancel()
+            translator.configure(updated)
+        }
+        observedConfig = updated
+    }
 
     override fun onCreate() {
         super.onCreate()
         overlay = TranslationOverlay(this)
+        preferences = getSharedPreferences("settings", MODE_PRIVATE)
+        observedConfig = RuntimeSettings.read(this).contextConfig
+        translator.configure(observedConfig)
+        preferences.registerOnSharedPreferenceChangeListener(configurationListener)
     }
 
     override fun onServiceConnected() {
@@ -75,13 +91,14 @@ class ScreenCaptureService : AccessibilityService() {
     }
 
     private fun capture(token: Long, config: RuntimeSettings, scope: String) {
-        val contextScope = if (config.api.enabled) "$scope:api:${config.api.endpoint}:${config.api.model}" else "$scope:local"
+        val contextConfig = config.contextConfig
         val metrics = getSystemService(WindowManager::class.java).currentWindowMetrics
         val bounds = metrics.bounds
         val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
         val area = Rect(insets.left, insets.top, bounds.width() - insets.right, bounds.height() - insets.bottom)
         try { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
             override fun onSuccess(result: ScreenshotResult) {
+                val capturedAt = SystemClock.elapsedRealtime()
                 val buffer = result.hardwareBuffer
                 val bitmap = try {
                     val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("截屏缓冲区不可读")
@@ -100,7 +117,9 @@ class ScreenCaptureService : AccessibilityService() {
                         AppRuntime.ensureLoaded(ModelCatalog.ocr)
                         phase(token, "识别中")
                         val blocks = AppRuntime.ocr.recognize(bitmap, config.source, area)
+                        if (blocks.isEmpty()) translator.clear()
                         check(blocks.isNotEmpty()) { "未识别到文字" }
+                        val appearance = screenAppearance(bitmap, area, blocks)
                         if (token != generation.get()) return@execute
                         if (!config.api.enabled) AppRuntime.ensureLoaded(ModelCatalog.translation)
                         if (token != generation.get()) return@execute
@@ -108,20 +127,20 @@ class ScreenCaptureService : AccessibilityService() {
                             else HyMtTranslationEngine()
                         if (token != generation.get()) return@execute
                         phase(token, "翻译中")
-                        val screen = translator.translate(blocks, config.source, config.target, contextScope, SystemClock.elapsedRealtime(),
-                            if (config.api.enabled) config.api.prompt else config.prompt)
+                        val screen = translator.translate(blocks, config.source, config.target, scope, capturedAt,
+                            contextConfig.prompt, appearance, contextConfig.backend)
                         val render = overlayBlocks(screen, bitmap)
                         AppRuntime.main.post {
                             if (token == generation.get()) {
                                 try {
                                     overlay.show(render, config)
-                                    translator.accept(screen, contextScope, SystemClock.elapsedRealtime())
-                                    AppRuntime.main.postDelayed({ AppRuntime.worker.execute {
+                                    translator.accept(screen, scope, SystemClock.elapsedRealtime())
+                                    AppRuntime.main.postDelayed({
                                         translator.expire(SystemClock.elapsedRealtime())
-                                    } }, ScreenTranslator.CONTEXT_TTL_MS)
+                                    }, ScreenTranslator.CONTEXT_TTL_MS)
                                     busy = false
                                     AppRuntime.pipelinePhase = "已覆盖"
-                                    Log.i(TAG, "overlay engine=${if (config.api.enabled) "api" else "local"} blocks=${screen.blocks.size} ids=${screen.blocks.joinToString { it.id }}")
+                                    Log.i(TAG, "overlay engine=${if (config.api.enabled) "api" else "local"} context=${screen.contextUsed} blocks=${screen.blocks.size} ids=${screen.blocks.joinToString { it.id }}")
                                     TranslationTileService.refresh(this@ScreenCaptureService)
                                 } catch (error: Exception) { finishFailure(token, error.message ?: "覆盖失败") }
                             }
@@ -162,7 +181,9 @@ class ScreenCaptureService : AccessibilityService() {
     // Overlay window events use our package too; the activity lifecycle distinguishes opening the app.
     fun onAppForegrounded() {
         cancel()
-        AppRuntime.worker.execute { translator.clear() }
+        translator.clear()
+        targetPackage = packageName
+        targetWindowId = -1
     }
 
     private fun cancel() {
@@ -180,26 +201,28 @@ class ScreenCaptureService : AccessibilityService() {
         val pkg = event.packageName?.toString().orEmpty()
         if (pkg.isEmpty() || pkg == packageName || pkg == "com.android.systemui") return
         val windowChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.windowId != targetWindowId
-        val switched = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != targetPackage
+        val switched = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && targetPackage.isNotEmpty() && pkg != targetPackage
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             targetPackage = pkg
             targetWindowId = event.windowId
         }
+        // App switches invalidate immediately, even while waiting for the notification shade to close.
+        if (switched) { cancel(); translator.clear(); return }
         if (waitingForShade) return
         val changed = event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
                 event.contentChangeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT != 0)
-        if (switched || windowChanged || (changed && pkg == targetPackage)) {
-            if (busy || (overlay.visible && (switched || windowChanged || settings?.autoCollapse != false))) cancel()
-            if (switched) AppRuntime.worker.execute { translator.clear() }
+        if (windowChanged || (changed && pkg == targetPackage)) {
+            if (busy || (overlay.visible && (windowChanged || settings?.autoCollapse != false))) cancel()
         }
     }
 
     override fun onInterrupt() { cancel() }
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) { super.onConfigurationChanged(newConfig); cancel() }
     override fun onDestroy() {
+        preferences.unregisterOnSharedPreferenceChangeListener(configurationListener)
         cancel()
-        AppRuntime.worker.execute { translator.clear() }
+        translator.clear()
         current = null
         AppRuntime.serviceConnected = false
         super.onDestroy()
