@@ -11,6 +11,8 @@ import androidx.compose.ui.unit.sp
 import io.github.yomikomi.translation.ApiProvider
 import io.github.yomikomi.translation.ApiSecretStore
 import io.github.yomikomi.translation.ApiSettings
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 /** Kept only while this dialog is open, including its prompt subpanels. No saved-state plaintext key. */
 @Stable
@@ -67,7 +69,10 @@ internal fun ApiForm(state: UiState, draft: ApiDraft, onDismiss: () -> Unit, ope
                 draft.secret = ""
                 state.api = config
                 onDismiss()
-            } catch (failure: Exception) { error = failure.message ?: "无法保存 API 设置" }
+            } catch (failure: Exception) {
+                RunLog.error(LogModule.API, "settings_failed", failure)
+                error = failure.message ?: "无法保存 API 设置"
+            }
         }
     }, Modifier.fillMaxWidth())
 }

@@ -17,6 +17,8 @@ import android.annotation.SuppressLint
 import io.github.yomikomi.RuntimeSettings
 import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.translation.TranslatedScreen
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 data class OverlayBlock(val bounds: PixelBounds, val text: String, val background: Int)
 
@@ -43,7 +45,7 @@ class TranslationOverlay(private val context: Context) {
     val visible get() = view != null
 
     @SuppressLint("RtlHardcoded") // Coordinates are physical display pixels, independent of locale.
-    fun show(blocks: List<OverlayBlock>, settings: RuntimeSettings) {
+    fun show(blocks: List<OverlayBlock>, settings: RuntimeSettings) = RunLog.measure(LogModule.OVERLAY, "show", "blocks" to blocks.size) {
         hide()
         val layer = OverlayView(context, blocks, settings)
         val params = WindowManager.LayoutParams(
@@ -62,7 +64,12 @@ class TranslationOverlay(private val context: Context) {
         view = layer
     }
 
-    fun hide() { view?.let(manager::removeViewImmediate); view = null }
+    fun hide() {
+        view?.let {
+            RunLog.measure(LogModule.OVERLAY, "hide") { manager.removeViewImmediate(it) }
+        }
+        view = null
+    }
 
     private class OverlayView(context: Context, blocks: List<OverlayBlock>, settings: RuntimeSettings) : View(context) {
         private val background = Paint()

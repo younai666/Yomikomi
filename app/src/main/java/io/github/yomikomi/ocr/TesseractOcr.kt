@@ -6,6 +6,8 @@ import com.googlecode.tesseract.android.TessBaseAPI
 import io.github.yomikomi.translation.PixelBounds
 import io.github.yomikomi.translation.RecognizedBlock
 import java.io.File
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 /** A single real OCR backend, using the official fast LSTM Japanese/English/Russian data. */
 class TesseractOcr(private val root: File) {
@@ -29,7 +31,12 @@ class TesseractOcr(private val root: File) {
         language = languages
     }
 
-    fun recognize(bitmap: Bitmap, source: String, area: Rect): List<RecognizedBlock> {
+    fun recognize(bitmap: Bitmap, source: String, area: Rect): List<RecognizedBlock> =
+        RunLog.measure(LogModule.OCR, "recognize", "width" to area.width(), "height" to area.height()) {
+            recognizeImage(bitmap, source, area).also { RunLog.info(LogModule.OCR, "blocks", "count" to it.size) }
+        }
+
+    private fun recognizeImage(bitmap: Bitmap, source: String, area: Rect): List<RecognizedBlock> {
         selectLanguage(when (source) {
             "日语" -> "jpn"
             "英语" -> "eng"

@@ -11,12 +11,15 @@ import android.service.quicksettings.TileService
 import androidx.annotation.RequiresApi
 import io.github.yomikomi.AppRuntime
 import io.github.yomikomi.MainActivity
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 @RequiresApi(24)
 class TranslationTileService : TileService() {
     override fun onTileAdded() { rememberAdded(true) }
     override fun onTileRemoved() { rememberAdded(false) }
     private fun rememberAdded(value: Boolean) {
+        if (AppRuntime.tileAdded != value) RunLog.info(LogModule.PERMISSION, if (value) "tile_added" else "tile_removed")
         AppRuntime.tileAdded = value
         getSharedPreferences("runtime", 0).edit().putBoolean("tile", value).apply()
     }
@@ -36,6 +39,7 @@ class TranslationTileService : TileService() {
     @SuppressLint("StartActivityAndCollapseDeprecated") // Intent overload is only used below API 34.
     private fun activate() {
         if (Build.VERSION.SDK_INT < 30 || ScreenCaptureService.current == null) {
+            RunLog.warn(LogModule.PERMISSION, "tile_service_unavailable")
             val intent = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             if (Build.VERSION.SDK_INT >= 34) startActivityAndCollapse(
                 PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))

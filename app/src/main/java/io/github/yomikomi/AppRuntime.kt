@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,6 +14,8 @@ import io.github.yomikomi.models.ModelDownloader
 import io.github.yomikomi.models.ModelSpec
 import io.github.yomikomi.ocr.TesseractOcr
 import io.github.yomikomi.translation.NativeLlama
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -20,7 +24,13 @@ data class ModelStatus(val phase: String, val bytes: Long, val total: Long, val 
 }
 
 class YomikomiApplication : Application() {
-    override fun onCreate() { super.onCreate(); AppRuntime.initialize(this) }
+    override fun onCreate() {
+        super.onCreate()
+        RunLog.initialize(File(noBackupFilesDir, "logs")) { Log.w("YomikomiLog", "file_logging_failed") }
+        RunLog.info(LogModule.APP, "started", "sdk" to Build.VERSION.SDK_INT, "pid" to android.os.Process.myPid(),
+            "processors" to Runtime.getRuntime().availableProcessors(), "max_heap_mb" to Runtime.getRuntime().maxMemory() / 1_048_576)
+        AppRuntime.initialize(this)
+    }
 }
 
 /** One worker owns OCR and llama.cpp; downloads use the foreground service's separate worker. */
@@ -62,10 +72,14 @@ object AppRuntime {
         if (spec.id in ready) return
         update(spec, "加载中", spec.bytes)
         try {
-            val verifier = ModelDownloader(root)
-            check(spec.assets.all { verifier.valid(File(root, it.path), it) }) { "请先下载完整模型" }
-            if (spec == ModelCatalog.ocr) ocr.load()
-            else NativeLlama.load(File(root, spec.assets.single().path).absolutePath)
+            RunLog.measure(LogModule.MODEL, "load", "kind" to if (spec == ModelCatalog.ocr) 0 else 1) {
+                val verifier = ModelDownloader(root)
+                RunLog.measure(LogModule.MODEL, "verify", "bytes" to spec.bytes) {
+                    check(spec.assets.all { verifier.valid(File(root, it.path), it) }) { "请先下载完整模型" }
+                }
+                if (spec == ModelCatalog.ocr) ocr.load()
+                else NativeLlama.load(File(root, spec.assets.single().path).absolutePath)
+            }
             ready += spec.id
             update(spec, "已加载", spec.bytes)
         } catch (error: Exception) {

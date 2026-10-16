@@ -9,11 +9,19 @@ import androidx.activity.enableEdgeToEdge
 import io.github.yomikomi.ui.YomikomiApp
 import io.github.yomikomi.ui.YomikomiTheme
 import io.github.yomikomi.capture.ScreenCaptureService
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
+        RunLog.info(LogModule.APP, "foreground")
         if (Build.VERSION.SDK_INT >= 30) ScreenCaptureService.current?.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        RunLog.info(LogModule.APP, "background")
+        super.onStop()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

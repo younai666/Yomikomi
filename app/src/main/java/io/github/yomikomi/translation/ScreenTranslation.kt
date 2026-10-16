@@ -1,6 +1,11 @@
 package io.github.yomikomi.translation
 
 import kotlin.math.abs
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
+import java.util.Locale
+
+enum class ContextReset { MANUAL, APP_SWITCH, FOREGROUND, EMPTY, UNKNOWN_PACKAGE, UNRELATED, EXPIRED, CONFIG_CHANGED, SERVICE_STOP }
 
 /** Coordinates are physical pixels in the captured display, including system bar insets. */
 data class PixelBounds(val left: Int, val top: Int, val right: Int, val bottom: Int) {
@@ -63,7 +68,13 @@ class ScreenTranslator(private val engine: TranslationEngine) {
                     ContextContinuity.related(it, valid, appearance)
             }
             // Actually erase rejected context: A → unrelated B → A must not resurrect A, even if B fails.
-            if (last != null && previous == null) clear()
+            if (last != null && previous == null) clear(when {
+                valid.isEmpty() -> ContextReset.EMPTY
+                scope.isBlank() -> ContextReset.UNKNOWN_PACKAGE
+                now - lastTime !in 0 until CONTEXT_TTL_MS -> ContextReset.EXPIRED
+                lastScope != scope -> ContextReset.APP_SWITCH
+                else -> ContextReset.UNRELATED
+            })
             val requestVersion = ++version
             val unmatched = previous?.blocks?.toMutableList() ?: mutableListOf()
             val blocks = valid.map { block ->
@@ -88,6 +99,8 @@ class ScreenTranslator(private val engine: TranslationEngine) {
             }
             TranslatedScreen(blocks, emptyMap(), source, target, prompt, backend, scope, appearance, context != null, requestVersion) to context
         }
+        RunLog.info(LogModule.CONTEXT, "decision", "reused" to if (context != null) 1 else 0,
+            "blocks" to draft.blocks.size, "version" to draft.contextVersion)
         if (draft.blocks.isEmpty()) return draft
         val request = TranslationRequest(source, target, draft.blocks.map { TranslationSegment(it.id, it.text) }, context, prompt)
         // Slow model/network work must not hold the cache lock: app/config invalidations are immediate.
@@ -103,27 +116,37 @@ class ScreenTranslator(private val engine: TranslationEngine) {
     /** Only displayed screens become context; canceled/failed requests never replace it. */
     @Synchronized
     fun accept(screen: TranslatedScreen, scope: String, now: Long): Boolean {
-        if (screen.contextVersion != version || screen.packageName != scope || scope.isBlank() || screen.blocks.isEmpty()) return false
+        if (screen.contextVersion != version || screen.packageName != scope || scope.isBlank() || screen.blocks.isEmpty()) {
+            RunLog.info(LogModule.CONTEXT, "accept_rejected")
+            return false
+        }
         version++ // Consume the result once; expired/already accepted screens cannot be accepted again.
         last = screen
         lastTime = now
         lastScope = scope
+        RunLog.info(LogModule.CONTEXT, "accepted", "blocks" to screen.blocks.size)
         return true
     }
 
     @Synchronized
     fun configure(config: ContextConfig) {
-        if (configured?.matches(config) == false) clear()
+        if (configured?.matches(config) == false) clear(ContextReset.CONFIG_CHANGED)
         configured = config
     }
 
     @Synchronized
-    fun clear() { last = null; lastScope = null; version++ }
+    fun clear(reason: ContextReset = ContextReset.MANUAL) {
+        last = null; lastScope = null; version++
+        RunLog.info(LogModule.CONTEXT, "cleared.${reason.name.lowercase(Locale.ROOT)}")
+    }
 
     @Synchronized
     fun expire(now: Long) {
         // Expiring the older cached page must not invalidate a new translation already in progress.
-        if (now < lastTime || now - lastTime >= CONTEXT_TTL_MS) { last = null; lastScope = null }
+        if (now < lastTime || now - lastTime >= CONTEXT_TTL_MS) {
+            if (last != null) RunLog.info(LogModule.CONTEXT, "expired")
+            last = null; lastScope = null
+        }
     }
 
     companion object {

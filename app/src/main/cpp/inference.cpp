@@ -7,12 +7,21 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <chrono>
 
 namespace {
 std::atomic<bool> canceled{false};
 std::unique_ptr<llama_model, decltype(&llama_model_free)> model(nullptr, llama_model_free);
 std::unique_ptr<llama_context, decltype(&llama_free)> context(nullptr, llama_free);
 bool abort_inference(void *) { return canceled.load(); }
+using Clock = std::chrono::steady_clock;
+void report(JNIEnv * env, jobject receiver, int stage, Clock::time_point start, int tokens) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    auto type = env->GetObjectClass(receiver);
+    auto method = env->GetMethodID(type, "onNativeStage", "(IJI)V");
+    env->CallVoidMethod(receiver, method, static_cast<jint>(stage), static_cast<jlong>(elapsed), static_cast<jint>(tokens));
+    env->DeleteLocalRef(type);
+}
 void fail(JNIEnv * env, const char * message) {
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message);
 }
@@ -29,6 +38,8 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject
     context.reset();
     model.reset();
     canceled = false;
+    // Our Kotlin boundary logs timings and sanitized failures, never upstream free-form text.
+    llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
     llama_backend_init();
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
@@ -49,7 +60,7 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeLoad(JNIEnv * env, jobject
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
-    JNIEnv * env, jobject, jbyteArray input, jstring grammar, jint max_tokens) {
+    JNIEnv * env, jobject receiver, jbyteArray input, jstring grammar, jint max_tokens) {
     try {
         if (!context) throw std::runtime_error("Model not loaded");
         canceled = false;
@@ -79,11 +90,15 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.6f, 1));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
+        auto prefill_start = Clock::now();
         for (int pos = 0; pos < count; pos += 256) {
             if (canceled) throw std::runtime_error("Canceled");
             auto batch = llama_batch_get_one(tokens.data() + pos, std::min(256, count - pos));
             if (llama_decode(context.get(), batch) != 0) throw std::runtime_error("Prompt evaluation failed");
         }
+        report(env, receiver, 0, prefill_start, count);
+        auto decode_start = Clock::now();
+        int generated = 0;
         std::string output;
         bool finished = false;
         for (int i = 0; i < max_tokens; ++i) {
@@ -94,9 +109,11 @@ Java_io_github_yomikomi_translation_NativeLlama_nativeGenerate(
             int size = llama_token_to_piece(vocab, token, buffer, sizeof(buffer), 0, false);
             if (size < 0) throw std::runtime_error("Token conversion failed");
             output.append(buffer, size);
+            generated++;
             auto batch = llama_batch_get_one(&token, 1);
             if (llama_decode(context.get(), batch) != 0) throw std::runtime_error("Generation failed");
         }
+        report(env, receiver, 1, decode_start, generated);
         if (!finished) throw std::runtime_error("Translation exceeded output limit");
         auto result = env->NewByteArray(output.size());
         env->SetByteArrayRegion(result, 0, output.size(), reinterpret_cast<const jbyte *>(output.data()));

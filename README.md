@@ -103,9 +103,34 @@ API device tests cover whole-screen serialization, all prompts, ID parsing, HTTP
 
 The external fixture accepts `--ez dark true` for dark-background OCR/overlay checks. After displaying a translation, reopen Yomikomi: its activity start cancels pending work, removes the overlay immediately and clears short-term context. Accessibility events from the app's own overlay remain ignored so it cannot dismiss itself.
 
-For continuity checks, the fixture also accepts `--es page story1`, `story2` and `unrelated`; `--activity-single-top` updates the same activity. Hide the existing overlay with the tile before each change, then translate again. `story1 → story2` should log `context=true`; returning from another app or moving to `unrelated` should log `context=false`. No OCR/translated content is logged by this diagnostic.
+For continuity checks, the fixture also accepts `--es page story1`, `story2` and `unrelated`; `--activity-single-top` updates the same activity. Hide the existing overlay with the tile before each change, then translate again. In runtime logs, `story1 → story2` should record `CONTEXT decision reused=1`; returning from another app or moving to `unrelated` should record `reused=0`. No OCR/translated content is logged by this diagnostic.
 
 The generated launcher artwork and its production prompt are included in [`app/src/main/res/drawable-nodpi/yomikomi_wordmark.png`](app/src/main/res/drawable-nodpi/yomikomi_wordmark.png) and [`docs/launcher-icon-prompt.txt`](docs/launcher-icon-prompt.txt). Android 8+ uses an adaptive icon with lettering inset into the circular safe zone; older versions use the square artwork.
+
+## In-app updates
+
+Home's bottom-right **检查更新** capsule checks public GitHub Releases, including published previews, using semantic version precedence. A newer release downloads inside the app; the capsule shows progress, then opens Android's installer. Otherwise it reports **已是最新**. Android may first ask you to allow installation from Yomikomi; granting access returns to the installer. Cancelling installation leaves **安装更新** available without downloading again.
+
+APK selection prefers the device's ABI, then a universal APK. Downloads reuse size/SHA-256 verification and pinned partial-file resumption. Before installation, the app checks its package name, release version, increasing Android version code, supported native ABI and the **same signing certificate as the installed app**. The temporary content URI grants only read access to the update APK directory. Models, logs and API keys are outside this provider. Debug builds cannot update from release-signed APKs.
+
+Checks are manual and use GitHub without credentials. Successful results are cached in memory for one minute. If the shared public API quota is exhausted or the API is unavailable, checks use GitHub's public Releases Atom feed and asset page; APK size comes from HTTPS HEAD and the SHA-256 digest must still be present on the asset page. API cooldown respects GitHub's reset/retry headers. An expired cache or an unavailable/malformed fallback never reports “latest”. Downloads run while the process is alive; after a system kill, checking again resumes a matching partial file, identified by its digest across both metadata sources. The app never launches an installer from the background; a finished download waits until Home resumes. Release publishers must use a `vMAJOR.MINOR.PATCH` tag, increase `versionCode`, retain the signing key and attach a signed `Yomikomi-*.apk` (optionally suffixed with `arm64-v8a` or `x86_64`) with GitHub's SHA-256 asset digest.
+
+`UpdateReleaseTest` covers version precedence and ABI/metadata selection. `UpdateDeviceTest` covers JSON/HTTP failures and, optionally, a simulated release/download followed by real Android APK validation and the system installation confirmation (automatically cancelled). On a disposable Windows emulator, after building and installing the debug/test APKs:
+
+```powershell
+.\tools\build-update-fixtures.ps1
+adb shell appops set io.github.yomikomi REQUEST_INSTALL_PACKAGES allow
+adb shell am instrument -w -e class io.github.yomikomi.UpdateDeviceTest -e apkFixture true io.github.yomikomi.test/androidx.test.runner.AndroidJUnitRunner
+adb shell appops set io.github.yomikomi REQUEST_INSTALL_PACKAGES default
+```
+
+The tiny APK fixtures stay in the OS temporary directory and `/data/local/tmp`; they are not shipped. Restore the previous app-op mode if it differed from `default`. Revoke it after instrumentation exits: Android can terminate the process when install permission is revoked. These fixtures target development version `0.1.1` / code `2`; raise their future version when testing later releases.
+
+## Runtime logs
+
+**Settings → 运行日志 → 下载** opens Android's file picker and exports a UTF-8 `.txt` snapshot, oldest first, including the current log and up to two rotated files. No storage permission is needed. Logs live in app-private, non-backed-up storage; each file is limited to 1 MiB. Background writes use a bounded queue; dropped records are counted, and logging failures never interrupt translation. Uncaught managed exceptions are written synchronously before delegating to Android's existing crash handler.
+
+Records contain UTC time, level, module, fixed state/event names and numeric metadata such as block counts, HTTP/screenshot status codes, download progress and stage durations. Local inference also records prefill/decode durations and token counts. Exception types, frames, causes and suppressed exceptions are retained with bounded depth; **all exception messages are omitted** because third-party errors can contain private input or responses. Screenshots, OCR/translated text, prompts, API keys, request/response bodies, endpoints and foreground-app package names are never logged. The logger does not collect device-wide Logcat. Native llama.cpp free-form logging is disabled; its Kotlin/JNI boundary supplies sanitized diagnostics. Native crashes, forced process termination and system kills may require Android's own diagnostics.
 
 ## Current limits
 

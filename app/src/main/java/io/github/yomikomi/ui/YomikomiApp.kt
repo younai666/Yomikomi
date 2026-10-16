@@ -17,6 +17,8 @@ import io.github.yomikomi.AppRuntime
 import io.github.yomikomi.RuntimeSettings
 import io.github.yomikomi.models.ModelCatalog
 import io.github.yomikomi.translation.PromptSettings
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,34 +54,42 @@ fun YomikomiApp() {
     }
     var page by rememberSaveable { mutableIntStateOf(0) }
     var panel by rememberSaveable { mutableStateOf<Panel?>(null) }
+    LaunchedEffect(page) { RunLog.info(LogModule.ACTION, if (page == 0) "home_opened" else "settings_opened") }
+    LaunchedEffect(panel) { panel?.let { RunLog.info(LogModule.ACTION, "panel_opened", "panel" to it.ordinal) } }
     BackHandler(enabled = page != 0 && panel == null) { page = 0 }
 
     Box(Modifier.fillMaxSize().background(yomiColors.background).safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
         Crossfade(page, animationSpec = tween(180), label = "page", modifier = Modifier.widthIn(max = 600.dp)) { selected ->
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp).padding(top = 24.dp, bottom = 32.dp),
-            ) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (selected != 0) {
-                        QuietIconButton(Glyph.Back, "返回主页", { page = 0 }, Modifier.offset(x = (-12).dp))
-                        Spacer(Modifier.width(4.dp))
+            Column(Modifier.fillMaxSize()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp).padding(top = 24.dp, bottom = 32.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (selected != 0) {
+                            QuietIconButton(Glyph.Back, "返回主页", { page = 0 }, Modifier.offset(x = (-12).dp))
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            if (selected == 0) "Yomikomi" else "设置",
+                            modifier = Modifier.weight(1f),
+                            color = yomiColors.ink,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Normal,
+                            fontSize = if (selected == 0) 36.sp else 30.sp,
+                            letterSpacing = if (selected == 0) (-1.4).sp else 0.sp,
+                            lineHeight = 46.sp,
+                        )
+                        if (selected == 0) QuietIconButton(Glyph.Settings, "设置", { page = 1 })
                     }
-                    Text(
-                        if (selected == 0) "Yomikomi" else "设置",
-                        modifier = Modifier.weight(1f),
-                        color = yomiColors.ink,
-                        fontFamily = FontFamily.Serif,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = if (selected == 0) 36.sp else 30.sp,
-                        letterSpacing = if (selected == 0) (-1.4).sp else 0.sp,
-                        lineHeight = 46.sp,
-                    )
-                    if (selected == 0) QuietIconButton(Glyph.Settings, "设置", { page = 1 })
+                    Spacer(Modifier.height(if (selected == 0) 36.dp else 24.dp))
+                    if (selected == 0) HomeScreen(state) { panel = it }
+                    else SettingsScreen(state) { panel = it }
                 }
-                Spacer(Modifier.height(if (selected == 0) 36.dp else 24.dp))
-                if (selected == 0) HomeScreen(state) { panel = it }
-                else SettingsScreen(state) { panel = it }
+                if (selected == 0) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
+                        horizontalArrangement = Arrangement.End) { UpdateCapsule() }
+                }
             }
         }
     }

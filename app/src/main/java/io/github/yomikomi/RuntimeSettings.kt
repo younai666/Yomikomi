@@ -6,6 +6,8 @@ import io.github.yomikomi.translation.PromptSettings
 import io.github.yomikomi.translation.ApiSettings
 import io.github.yomikomi.translation.ApiProvider
 import io.github.yomikomi.translation.ContextConfig
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 data class RuntimeSettings(
     val source: String, val target: String, val opacity: Float, val textSize: Int, val autoCollapse: Boolean,
@@ -30,6 +32,7 @@ data class RuntimeSettings(
         }
     }
     fun save(context: Context) {
+        RunLog.info(LogModule.ACTION, "settings_saved", "api_enabled" to if (api.enabled) 1 else 0)
         context.getSharedPreferences("settings", 0).edit().putString("source", source).putString("target", target)
             .putFloat("opacity", opacity).putInt("textSize", textSize).putBoolean("autoCollapse", autoCollapse)
             .putString("promptMode", prompt.mode.key).putString("customPrompt", prompt.customTemplate)

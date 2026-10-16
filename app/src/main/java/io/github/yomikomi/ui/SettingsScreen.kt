@@ -59,4 +59,7 @@ internal fun SettingsScreen(state: UiState, open: (Panel) -> Unit) {
     })
     Hairline()
     QuietSwitch("自动收起", state.autoCollapse) { state.autoCollapse = it }
+    Spacer(Modifier.height(24.dp))
+    Hairline()
+    RuntimeLogRow()
 }

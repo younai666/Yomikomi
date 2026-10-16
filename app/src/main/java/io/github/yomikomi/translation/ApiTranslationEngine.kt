@@ -8,6 +8,8 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 class ApiTranslationEngine(
     private val config: ApiSettings,
@@ -17,7 +19,10 @@ class ApiTranslationEngine(
     private val canceled = AtomicBoolean(false)
     @Volatile private var connection: HttpURLConnection? = null
 
-    override fun translate(request: TranslationRequest): List<TranslationSegment> {
+    override fun translate(request: TranslationRequest): List<TranslationSegment> =
+        RunLog.measure(LogModule.API, "request", "blocks" to request.segments.size) { requestScreen(request) }
+
+    private fun requestScreen(request: TranslationRequest): List<TranslationSegment> {
         check(!canceled.get()) { "已取消" }
         val url = URL(config.completionUrl())
         val key = secret()
@@ -39,7 +44,9 @@ class ApiTranslationEngine(
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             conn.setRequestProperty("Accept", "application/json")
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            check(conn.responseCode == 200) { when (conn.responseCode) {
+            val status = conn.responseCode
+            RunLog.info(LogModule.API, "response", "http_status" to status)
+            check(status == 200) { when (status) {
                 401, 403 -> "API 鉴权失败，请检查密钥"
                 402 -> "API 余额不足"
                 404 -> "API 地址或模型不存在"
@@ -66,11 +73,11 @@ class ApiTranslationEngine(
             val choice = choices.getJSONObject(0)
             check(choice.getString("finish_reason") == "stop") { "API 译文未完整生成" }
             return TranslationProtocol.parse(choice.getJSONObject("message").getString("content").trim(), request.segments)
-        } catch (_: SocketTimeoutException) { throw IllegalStateException(if (canceled.get()) "已取消" else "API 请求超时") }
-        catch (_: IOException) { throw IllegalStateException(if (canceled.get()) "已取消" else "API 网络连接失败") }
-        catch (_: JSONException) { throw IllegalStateException("API 返回了无效响应") }
+        } catch (error: SocketTimeoutException) { throw IllegalStateException(if (canceled.get()) "已取消" else "API 请求超时", error) }
+        catch (error: IOException) { throw IllegalStateException(if (canceled.get()) "已取消" else "API 网络连接失败", error) }
+        catch (error: JSONException) { throw IllegalStateException("API 返回了无效响应", error) }
         finally { conn.disconnect(); connection = null }
     }
 
-    override fun cancel() { canceled.set(true); connection?.disconnect() }
+    override fun cancel() { RunLog.info(LogModule.API, "cancel_requested"); canceled.set(true); connection?.disconnect() }
 }

@@ -15,6 +15,8 @@ import io.github.yomikomi.AppRuntime
 import io.github.yomikomi.MainActivity
 import java.io.InterruptedIOException
 import java.util.concurrent.Executors
+import io.github.yomikomi.logging.LogModule
+import io.github.yomikomi.logging.RunLog
 
 class ModelDownloadService : Service() {
     private val worker = Executors.newSingleThreadExecutor()
@@ -23,6 +25,7 @@ class ModelDownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == PAUSE) {
+            RunLog.info(LogModule.ACTION, "download_pause")
             downloader?.cancel() ?: stopSelf()
             return START_NOT_STICKY
         }
@@ -30,6 +33,9 @@ class ModelDownloadService : Service() {
         val spec = ModelCatalog.all.find { it.id == intent?.getStringExtra("model") }
             ?: run { stopSelf(); return START_NOT_STICKY }
         active = spec
+        RunLog.info(LogModule.ACTION, "download_start", "kind" to if (spec == ModelCatalog.ocr) 0 else 1,
+            "notification_permission" to if (Build.VERSION.SDK_INT < 33 ||
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) 1 else 0)
         AppRuntime.update(spec, "下载中", AppRuntime.status(spec).bytes)
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(
@@ -39,7 +45,15 @@ class ModelDownloadService : Service() {
         downloader = download
         worker.execute {
             try {
+                var previousBucket = -1
+                var previousPhase = ""
                 download.download(spec) { bytes, phase ->
+                    val percent = (bytes * 100 / spec.bytes).toInt()
+                    if (percent / 10 != previousBucket || phase != previousPhase) {
+                        RunLog.info(LogModule.DOWNLOAD, "progress", "bytes" to bytes, "percent" to percent,
+                            "phase" to when (phase) { "下载中" -> 0; "校验中" -> 1; else -> 2 })
+                        previousBucket = percent / 10; previousPhase = phase
+                    }
                     AppRuntime.update(spec, phase, bytes)
                     if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
                         manager.notify(NOTIFICATION, notification(spec, bytes, phase))
@@ -77,7 +91,10 @@ class ModelDownloadService : Service() {
     }
 
     override fun onDestroy() { downloader?.cancel(); worker.shutdown(); super.onDestroy() }
-    override fun onTimeout(startId: Int, fgsType: Int) { downloader?.cancel(); stopSelf() }
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        RunLog.warn(LogModule.DOWNLOAD, "service_timeout")
+        downloader?.cancel(); stopSelf()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
