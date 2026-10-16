@@ -1,7 +1,12 @@
 package io.github.yomikomi.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -59,7 +64,14 @@ fun YomikomiApp() {
     BackHandler(enabled = page != 0 && panel == null) { page = 0 }
 
     Box(Modifier.fillMaxSize().background(yomiColors.background).safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
-        Crossfade(page, animationSpec = tween(180), label = "page", modifier = Modifier.widthIn(max = 600.dp)) { selected ->
+        AnimatedContent(page, label = "page", modifier = Modifier.widthIn(max = 600.dp), transitionSpec = {
+            val direction = if (targetState > initialState) 1 else -1
+            ((fadeIn(tween(YomiMotion.page, easing = YomiMotion.ease)) +
+                slideInHorizontally(tween(YomiMotion.page, easing = YomiMotion.ease)) { direction * it / 32 }) togetherWith
+                (fadeOut(tween(YomiMotion.exit)) +
+                    slideOutHorizontally(tween(YomiMotion.page, easing = YomiMotion.ease)) { -direction * it / 48 }))
+                .using(null)
+        }) { selected ->
             Column(Modifier.fillMaxSize()) {
                 Column(
                     Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
@@ -88,13 +100,11 @@ fun YomikomiApp() {
                 }
                 if (selected == 0) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
-                        horizontalArrangement = Arrangement.End) { UpdateCapsule() }
+                        horizontalArrangement = Arrangement.End) { UpdateCapsule(active = selected == page) }
                 }
             }
         }
     }
 
-    panel?.let { selected ->
-        SettingsPanel(selected, state, onDismiss = { panel = null }, onOpen = { panel = it })
-    }
+    SettingsPanel(panel, state, onDismiss = { panel = null }, onOpen = { panel = it })
 }

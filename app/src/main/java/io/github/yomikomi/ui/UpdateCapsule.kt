@@ -7,16 +7,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -29,9 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -44,7 +33,7 @@ import io.github.yomikomi.update.AppUpdater
 import io.github.yomikomi.update.UpdatePhase
 
 @Composable
-internal fun UpdateCapsule() {
+internal fun UpdateCapsule(active: Boolean = true) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
@@ -86,8 +75,8 @@ internal fun UpdateCapsule() {
         }
     }
     val state = AppUpdater.status
-    LaunchedEffect(state.phase, foreground) {
-        if (state.phase == UpdatePhase.Downloaded && foreground) install()
+    LaunchedEffect(state.phase, foreground, active) {
+        if (state.phase == UpdatePhase.Downloaded && foreground && active) install()
     }
     val label = when (state.phase) {
         UpdatePhase.Idle -> "检查更新"
@@ -96,20 +85,17 @@ internal fun UpdateCapsule() {
         UpdatePhase.Verifying -> "校验中"
         UpdatePhase.Downloaded, UpdatePhase.Ready -> "安装更新"
     }
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val focused by interaction.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, tween(120), label = "update_press")
-    val surface by animateColorAsState(if (pressed) yomiColors.surface else yomiColors.surfaceLow, tween(120), label = "update_surface")
     val enabled = state.phase == UpdatePhase.Idle || state.phase == UpdatePhase.Ready
-    Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale }
-        .animateContentSize(tween(160))
+    Box(Modifier
         .shadow(2.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.12f), spotColor = Color.Black.copy(alpha = 0.12f))
-        .clip(CircleShape).background(surface)
-        .border(if (focused) 1.5.dp else 0.5.dp, if (focused) yomiColors.accent else yomiColors.line.copy(alpha = 0.6f), CircleShape)
-        .clickable(enabled = enabled, interactionSource = interaction, indication = null, role = Role.Button) {
+        .clip(CircleShape)
+        .quietClickable(enabled, CircleShape, pressedScale = 0.985f, disabledAlpha = 1f, surface = yomiColors.surfaceLow) {
             if (state.phase == UpdatePhase.Ready) install() else AppUpdater.check(context)
-        }.heightIn(min = 48.dp).widthIn(min = 96.dp).padding(horizontal = 20.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
-        Text(label, color = if (pressed || focused) yomiColors.ink else yomiColors.muted, fontSize = 14.sp, lineHeight = 20.sp)
+        }.border(0.5.dp, yomiColors.line.copy(alpha = 0.6f), CircleShape)
+        .heightIn(min = 48.dp).widthIn(min = 96.dp).padding(horizontal = 20.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
+        QuietContent(state.phase to label, alignment = Alignment.Center, contentKey = { it.first }) {
+            Text(it.second, color = yomiColors.muted, fontSize = 14.sp, lineHeight = 20.sp,
+                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"))
+        }
     }
 }

@@ -3,7 +3,6 @@ package io.github.yomikomi.ui
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,7 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.yomikomi.AppRuntime
@@ -39,7 +37,7 @@ internal fun RuntimeLogRow() {
         }
     }
     PreferenceRow("运行日志", trailing = {
-        Box(Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = !exporting, role = Role.Button) {
+        Box(Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).quietClickable(enabled = !exporting, shape = RoundedCornerShape(8.dp)) {
             exporting = true
             RunLog.info(LogModule.ACTION, "export_logs")
             try {
@@ -50,7 +48,7 @@ internal fun RuntimeLogRow() {
                 Toast.makeText(context, "无法打开文件保存器", Toast.LENGTH_SHORT).show()
             }
         }, contentAlignment = Alignment.CenterEnd) {
-            Text("下载", color = yomiColors.muted.copy(alpha = if (exporting) 0.4f else 1f), fontSize = 14.sp)
+            Text("下载", color = yomiColors.muted, fontSize = 14.sp)
         }
     })
 }

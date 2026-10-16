@@ -78,14 +78,18 @@ private fun LanguageEntry(text: String, label: String, modifier: Modifier, onCli
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val focused by interaction.collectIsFocusedAsState()
-    val color by animateColorAsState(if (pressed || focused) yomiColors.accent else yomiColors.ink, tween(120), label = "language")
+    val color by animateColorAsState(if (pressed || focused) yomiColors.accent else yomiColors.ink,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "language")
     Column(modifier.width(IntrinsicSize.Max).clip(RoundedCornerShape(8.dp))
+        .quietFeedback(interaction, shape = RoundedCornerShape(8.dp))
         .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
         .semantics { contentDescription = "$label：$text" }) {
         Row(Modifier.heightIn(min = 72.dp).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text, Modifier.weight(1f, fill = false), fontFamily = FontFamily.Serif,
-                fontSize = 28.sp, lineHeight = 40.sp, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            QuietContent(text, Modifier.weight(1f, fill = false)) {
+                Text(it, fontFamily = FontFamily.Serif, fontSize = 28.sp, lineHeight = 40.sp,
+                    color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             LineIcon(Glyph.Down, Modifier.size(12.dp), yomiColors.muted)
         }
         Hairline()
@@ -95,13 +99,15 @@ private fun LanguageEntry(text: String, label: String, modifier: Modifier, onCli
 @Composable
 private fun ModelChoice(title: String, value: String, modifier: Modifier, onClick: () -> Unit) {
     Column(modifier.heightIn(min = 96.dp).clip(RoundedCornerShape(12.dp))
-        .clickable(role = Role.Button, onClick = onClick)
+        .quietClickable(onClick = onClick)
         .semantics { contentDescription = "$title：$value" }.padding(horizontal = 12.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)) {
         Text(title, fontSize = 13.sp, lineHeight = 20.sp, color = yomiColors.muted)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(value, Modifier.weight(1f), fontSize = 18.sp, lineHeight = 26.sp, fontFamily = FontFamily.Serif,
-                color = yomiColors.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            QuietContent(value, Modifier.weight(1f)) {
+                Text(it, fontSize = 18.sp, lineHeight = 26.sp, fontFamily = FontFamily.Serif,
+                    color = yomiColors.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             LineIcon(Glyph.Next, Modifier.size(14.dp), yomiColors.muted)
         }
     }
@@ -111,7 +117,7 @@ private fun ModelChoice(title: String, value: String, modifier: Modifier, onClic
 private fun ServiceControl(title: String, status: String, active: Boolean, glyph: Glyph,
     onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(RoundedCornerShape(12.dp))
-        .clickable(role = Role.Button, onClick = onClick).padding(horizontal = 12.dp, vertical = 12.dp),
+        .quietClickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, Modifier.weight(1f), fontSize = 15.sp, color = yomiColors.ink)
         Status(status, active)

@@ -5,11 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -25,7 +21,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -83,16 +78,10 @@ internal fun QuietIconButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val focused by interaction.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, tween(120), label = "press")
     Box(
-        modifier.size(48.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+        modifier.size(48.dp)
             .clip(RoundedCornerShape(12.dp))
-            .border(1.5.dp, if (focused) yomiColors.accent else Color.Transparent, RoundedCornerShape(12.dp))
-            .graphicsLayer { alpha = if (enabled) 1f else 0.35f }
-            .clickable(enabled = enabled, interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+            .quietClickable(enabled = enabled, pressedScale = 0.96f, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
@@ -121,14 +110,15 @@ internal fun PreferenceRow(
 ) {
     Row(
         modifier.fillMaxWidth().heightIn(min = 60.dp).clip(RoundedCornerShape(8.dp))
-            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.quietClickable(shape = RoundedCornerShape(8.dp), onClick = onClick) else Modifier)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, modifier = Modifier.weight(1f), color = yomiColors.ink, fontSize = 16.sp)
         if (trailing != null) trailing() else {
-            value?.let { Text(it, color = yomiColors.muted, fontSize = 14.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 150.dp)) }
+            value?.let { label -> QuietContent(label, Modifier.widthIn(max = 150.dp), Alignment.CenterEnd) {
+                Text(it, color = yomiColors.muted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } }
             if (onClick != null) {
                 Spacer(Modifier.width(8.dp))
                 LineIcon(Glyph.Next, Modifier.size(16.dp), yomiColors.muted)
@@ -139,35 +129,48 @@ internal fun PreferenceRow(
 
 @Composable
 internal fun QuietSwitch(title: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    val track by animateColorAsState(if (checked) yomiColors.accent else yomiColors.muted, tween(150), label = "track")
-    val offset by animateFloatAsState(if (checked) 19f else 3f, tween(150), label = "thumb")
+    val interaction = remember { MutableInteractionSource() }
+    val track by animateColorAsState(if (checked) yomiColors.accent else yomiColors.muted,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "track")
+    val offset = animateFloatAsState(if (checked) 19f else 3f,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "thumb")
     Row(
         Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(8.dp))
-            .toggleable(checked, role = Role.Switch, onValueChange = onCheckedChange).padding(vertical = 12.dp),
+            .quietFeedback(interaction, shape = RoundedCornerShape(8.dp))
+            .toggleable(checked, interactionSource = interaction, indication = null, role = Role.Switch, onValueChange = onCheckedChange).padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, Modifier.weight(1f), color = yomiColors.ink, fontSize = 16.sp)
         Box(Modifier.size(44.dp, 28.dp).clip(CircleShape).background(track)) {
-            Box(Modifier.offset { IntOffset(offset.dp.roundToPx(), 3.dp.roundToPx()) }
+            Box(Modifier.offset { IntOffset(offset.value.dp.roundToPx(), 3.dp.roundToPx()) }
                 .size(22.dp).background(yomiColors.surface, CircleShape))
         }
     }
 }
 
 @Composable
-internal fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primary: Boolean = true, enabled: Boolean = true) {
+internal fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primary: Boolean = true, enabled: Boolean = true, stateKey: Any = text) {
+    val surface by animateColorAsState(if (primary) yomiColors.accent else yomiColors.inset,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "button_surface")
+    val ink by animateColorAsState(if (primary) yomiColors.surface else yomiColors.ink,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "button_ink")
     Box(
         modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-            .background(if (primary) yomiColors.accent else yomiColors.inset)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(horizontal = 20.dp, vertical = 12.dp),
+            .quietClickable(enabled, RoundedCornerShape(10.dp), pressedScale = 0.985f,
+                tint = if (primary) yomiColors.background else yomiColors.ink, surface = surface, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = if (primary) yomiColors.surface else yomiColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium) }
+    ) { QuietContent(stateKey to text, alignment = Alignment.Center, contentKey = { it.first }) {
+        Text(it.second, color = ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+    } }
 }
 
 @Composable
 internal fun Status(text: String, active: Boolean = false) {
+    val color by animateColorAsState(if (active) yomiColors.accent else yomiColors.muted,
+        tween(YomiMotion.change, easing = YomiMotion.ease), label = "status")
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.size(5.dp).background(if (active) yomiColors.accent else yomiColors.muted, CircleShape))
-        Text(text, color = if (active) yomiColors.accent else yomiColors.muted, fontSize = 12.sp)
+        Box(Modifier.size(5.dp).background(color, CircleShape))
+        QuietContent(text) { Text(it, color = color, fontSize = 12.sp) }
     }
 }
