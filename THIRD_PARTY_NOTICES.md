@@ -10,6 +10,8 @@ Yomikomi's integration code is independently implemented. StarFlow source is not
 | Tesseract4Android 4.9.0 | https://github.com/adaptech-cz/Tesseract4Android | Apache-2.0 |
 | Tesseract OCR 5.5.1 | https://github.com/tesseract-ocr/tesseract | Apache-2.0 |
 | Leptonica 1.85.0 | https://github.com/DanBloomberg/leptonica | BSD-2-Clause |
+| OkHttp 4.12.0 | https://github.com/square/okhttp | Apache-2.0 |
+| Okio 3.6.0 | https://github.com/square/okio | Apache-2.0 |
 | libpng 1.6.48 | https://github.com/pnggroup/libpng | libpng license |
 | IJG libjpeg 9f | https://ijg.org | IJG license |
 | AndroidX / Jetpack Compose | https://android.googlesource.com/platform/frameworks/support | Apache-2.0 |

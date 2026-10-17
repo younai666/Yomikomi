@@ -14,8 +14,12 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okio.Buffer
+import okio.Timeout
+import okio.buffer
+import okio.source
 import java.net.SocketException
 import java.util.zip.GZIPOutputStream
 import java.util.concurrent.TimeUnit
@@ -64,7 +68,9 @@ class ApiTranslationDeviceTest {
             assertEquals(1, opens)
             assertEquals(segments.map { it.id }, result.map { it.id })
             assertEquals("POST", conn.requestMethod)
-            assertFalse(conn.instanceFollowRedirects)
+            assertFalse(apiHttpClient.followRedirects)
+            assertFalse(apiHttpClient.retryOnConnectionFailure)
+            assertTrue(conn.lastRequest.body!!.isOneShot())
             assertEquals("Bearer test-key", conn.getRequestProperty("Authorization"))
             val body = JSONObject(conn.sent.toString("UTF-8"))
             assertEquals("deepseek-flash", body.getString("model"))
@@ -142,7 +148,7 @@ class ApiTranslationDeviceTest {
         val translated = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
         assertEquals(text.substringBefore('\n').substringAfter(" → "), translated.first().text)
         assertEquals((bytes.size + 2) / 3, reads)
-        assertEquals("close", conn.getRequestProperty("Connection"))
+        assertNull(conn.getRequestProperty("Connection"))
         assertTrue(conn.disconnected)
     }
 
@@ -283,15 +289,44 @@ class ApiTranslationDeviceTest {
         }.get(360, TimeUnit.SECONDS)
     }
 
-    private open class FakeConnection(body: String, private val code: Int = 200) : HttpURLConnection(URL("https://api.deepseek.com/chat/completions")) {
+    private open class FakeConnection(body: String, private val code: Int = 200) : Call.Factory {
         val sent = ByteArrayOutputStream()
         private val response = body.toByteArray(Charsets.UTF_8)
         var disconnected = false
-        override fun getOutputStream() = sent
-        override fun getInputStream(): InputStream = ByteArrayInputStream(response)
-        override fun getResponseCode() = code
-        override fun connect() { connected = true }
-        override fun disconnect() { disconnected = true }
-        override fun usingProxy() = false
+        lateinit var lastRequest: Request
+        val requestMethod get() = lastRequest.method
+        fun getRequestProperty(name: String) = lastRequest.header(name)
+        open fun getInputStream(): InputStream = ByteArrayInputStream(response)
+        open fun getHeaderField(name: String): String? = null
+        override fun newCall(request: Request): Call {
+            lastRequest = request
+            return object : Call {
+                private var canceled = false
+                private var executed = false
+                override fun request() = request
+                override fun execute(): Response {
+                    executed = true
+                    val buffer = Buffer()
+                    request.body!!.writeTo(buffer)
+                    sent.write(buffer.readByteArray())
+                    return Response.Builder().request(request).protocol(Protocol.HTTP_2).code(code).message("fixture")
+                        .apply { for (name in listOf("Content-Encoding", "Transfer-Encoding"))
+                            getHeaderField(name)?.let { header(name, it) } }
+                        .body(object : ResponseBody() {
+                            override fun contentType() = "application/json".toMediaType()
+                            override fun contentLength() = -1L
+                            private val input by lazy { getInputStream().source().buffer() }
+                            override fun source() = input
+                            override fun close() { disconnected = true; input.close() }
+                        }).build()
+                }
+                override fun enqueue(responseCallback: Callback) = error("Synchronous fixture")
+                override fun cancel() { canceled = true; disconnected = true }
+                override fun isCanceled() = canceled
+                override fun isExecuted() = executed
+                override fun timeout() = Timeout()
+                override fun clone(): Call = newCall(request)
+            }
+        }
     }
 }

@@ -6,7 +6,16 @@ import org.json.JSONObject
 import java.io.IOException
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
+import okhttp3.Call
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
+import okhttp3.Protocol
+import okhttp3.MediaType.Companion.toMediaType
+import okio.BufferedSink
+import java.util.concurrent.TimeUnit
+
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
@@ -16,14 +25,20 @@ import java.nio.charset.CodingErrorAction
 import io.github.yomikomi.logging.LogModule
 import io.github.yomikomi.logging.RunLog
 
+internal val apiHttpClient by lazy {
+    OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS).retryOnConnectionFailure(false)
+        .followRedirects(false).followSslRedirects(false).build()
+}
+
 class ApiTranslationEngine(
     private val config: ApiSettings,
     private val secret: () -> String,
-    private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+    private val open: (URL) -> Call.Factory = { apiHttpClient },
 ) : TranslationEngine {
     private val maxOutputTokens = 4096
     private val canceled = AtomicBoolean(false)
-    @Volatile private var connection: HttpURLConnection? = null
+    @Volatile private var connection: Call? = null
 
     override fun translate(request: TranslationRequest): List<TranslationSegment> =
         RunLog.measure(LogModule.API, "request", "blocks" to request.segments.size) { requestScreen(request) }
@@ -43,40 +58,38 @@ class ApiTranslationEngine(
             .put("messages", JSONArray().put(JSONObject().put("role", "system").put("content", fidelity))
                 .put(JSONObject().put("role", "user").put("content", prompt)))
         if (config.provider == ApiProvider.DeepSeek) body.put("thinking", JSONObject().put("type", "disabled"))
-        val conn = open(url)
+        val payload = body.toString().toByteArray(Charsets.UTF_8)
+        val post = Request.Builder().url(url).header("Authorization", "Bearer $key")
+            .header("Accept", "application/json").header("Accept-Encoding", "identity")
+            .post(object : RequestBody() {
+                override fun contentType() = "application/json; charset=utf-8".toMediaType()
+                override fun contentLength() = payload.size.toLong()
+                override fun isOneShot() = true // Never replay a potentially billed translation.
+                override fun writeTo(sink: BufferedSink) { sink.write(payload) }
+            }).build()
+        val conn = open(url).newCall(post)
         connection = conn
+        var httpResponse: Response? = null
         val requestStarted = System.nanoTime()
         var status = 0
         var receivedBytes = 0
-        var stage = 0 // 0 write, 1 headers, 2 open body, 3 gzip header, 4 read body, 5 JSON, 6 IDs.
+        var stage = 0 // 0 setup, 1 send/headers, 2 open body, 3 gzip header, 4 read body, 5 JSON, 6 IDs.
         var bodyStarted = 0L
         var firstByteAt = 0L
         var wireBytes = 0L
         var succeeded = false
         try {
             check(!canceled.get()) { "已取消" }
-            conn.connectTimeout = 15_000
-            conn.readTimeout = 60_000
-            conn.instanceFollowRedirects = false // Never forward the bearer key to another destination.
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Authorization", "Bearer $key")
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.setRequestProperty("Accept", "application/json")
-            // Avoid Android's transparent gzip reader blocking on a missing chunk/gzip header.
-            conn.setRequestProperty("Accept-Encoding", "identity")
-            // A translation POST must not reuse a stale keep-alive socket or be replayed implicitly.
-            conn.setRequestProperty("Connection", "close")
-            val payload = body.toString().toByteArray(Charsets.UTF_8)
             RunLog.text(LogModule.API, "api_input", request.traceId, body.getJSONArray("messages").toString(), key)
-            conn.setFixedLengthStreamingMode(payload.size)
-            conn.outputStream.use { it.write(payload) }
             stage = 1
-            status = conn.responseCode
-            val gzip = conn.getHeaderField("Content-Encoding")?.equals("gzip", ignoreCase = true) == true
+            val received = conn.execute()
+            httpResponse = received
+            status = received.code
+            val gzip = received.header("Content-Encoding")?.equals("gzip", ignoreCase = true) == true
             RunLog.info(LogModule.API, "response", "request" to request.traceId, "http_status" to status,
                 "headers_ms" to RunLog.elapsed(requestStarted), "gzip" to if (gzip) 1 else 0,
-                "chunked" to if (conn.getHeaderField("Transfer-Encoding")?.contains("chunked", true) == true) 1 else 0)
+                "chunked" to if (received.header("Transfer-Encoding")?.contains("chunked", true) == true) 1 else 0,
+                "http2" to if (received.protocol == Protocol.HTTP_2) 1 else 0)
             check(status == 200) { when (status) {
                 401, 403 -> "API 鉴权失败，请检查密钥"
                 402 -> "API 余额不足"
@@ -84,11 +97,11 @@ class ApiTranslationEngine(
                 429 -> "API 请求频率受限"
                 in 300..399 -> "API 返回重定向，请填写最终 HTTPS 地址"
                 in 500..599 -> "API 服务暂时不可用"
-                else -> "API 请求失败（HTTP ${conn.responseCode}）"
+                else -> "API 请求失败（HTTP ${received.code}）"
             } }
             stage = 2
             bodyStarted = System.nanoTime()
-            val wire = conn.inputStream
+            val wire = checkNotNull(received.body) { "API 响应缺少 body" }.byteStream()
             val counted = object : InputStream() {
                 private fun count(size: Int) {
                     if (size <= 0) return
@@ -162,7 +175,8 @@ class ApiTranslationEngine(
                 "stage" to stage, "http_status" to status, "wire_bytes" to wireBytes, "body_bytes" to receivedBytes,
                 "first_byte_ms" to if (firstByteAt == 0L) -1L else (firstByteAt - requestStarted) / 1_000_000,
                 "elapsed_ms" to RunLog.elapsed(requestStarted))
-            conn.disconnect(); connection = null
+            try { httpResponse?.close() } catch (error: IOException) { RunLog.warn(LogModule.API, "response_close_failed", error) }
+            connection = null
         }
     }
 
@@ -222,5 +236,5 @@ class ApiTranslationEngine(
         }
     }
 
-    override fun cancel() { RunLog.info(LogModule.API, "cancel_requested"); canceled.set(true); connection?.disconnect() }
+    override fun cancel() { RunLog.info(LogModule.API, "cancel_requested"); canceled.set(true); connection?.cancel() }
 }

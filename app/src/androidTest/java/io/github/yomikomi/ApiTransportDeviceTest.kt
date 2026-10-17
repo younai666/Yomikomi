@@ -1,0 +1,94 @@
+package io.github.yomikomi
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import io.github.yomikomi.translation.*
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.GZIPOutputStream
+import java.io.ByteArrayOutputStream
+
+/** Real HTTP framing on loopback; only debug builds permit loopback cleartext, never release. */
+@RunWith(AndroidJUnit4::class)
+class ApiTransportDeviceTest {
+    private val request = TranslationRequest("俄语", "简体中文", listOf(TranslationSegment("b7", "Привет.")), null)
+    private val json = """{"choices":[{"finish_reason":"stop","message":{"content":"[b7] → 完整译文😀。"}}]}""".toByteArray()
+
+    private fun exchange(gzip: Boolean = false, send: (Socket, ByteArray) -> Unit, test: (ApiTranslationEngine, AtomicInteger) -> Unit) {
+        ServerSocket(0, 2, InetAddress.getByName("127.0.0.1")).use { server ->
+            val calls = AtomicInteger()
+            var serverError: Throwable? = null
+            val worker = Thread {
+                try { server.accept().use { socket ->
+                    socket.soTimeout = 3000
+                    val input = socket.getInputStream()
+                    val headers = StringBuilder()
+                    while (!headers.endsWith("\r\n\r\n")) {
+                        val char = input.read(); check(char >= 0); headers.append(char.toChar())
+                    }
+                    val length = Regex("Content-Length: (\\d+)", RegexOption.IGNORE_CASE).find(headers)!!.groupValues[1].toInt()
+                    repeat(length) { check(input.read() >= 0) }
+                    val output = socket.getOutputStream()
+                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n" +
+                        (if (gzip) "Content-Encoding: gzip\r\n" else "") + "\r\n").toByteArray())
+                    output.flush()
+                    val body = if (gzip) ByteArrayOutputStream().apply { GZIPOutputStream(this).use { it.write(json) } }.toByteArray() else json
+                    send(socket, body)
+                } } catch (error: Throwable) { serverError = error }
+            }.apply { isDaemon = true; start() }
+            try {
+                val engine = ApiTranslationEngine(ApiSettings(), { "loopback-fixture-key" }) {
+                    okhttp3.Call.Factory { original ->
+                        calls.incrementAndGet()
+                        apiHttpClient.newCall(original.newBuilder().url("http://127.0.0.1:${server.localPort}/fixture").build())
+                    }
+                }
+                test(engine, calls)
+            } finally { worker.join(3500) }
+            assertFalse("Loopback server did not finish", worker.isAlive)
+            serverError?.let { throw AssertionError("Loopback fixture failed", it) }
+        }
+    }
+
+    private fun chunk(socket: Socket, bytes: ByteArray) {
+        socket.getOutputStream().apply {
+            write("${bytes.size.toString(16)}\r\n".toByteArray()); write(bytes); write("\r\n".toByteArray()); flush()
+        }
+    }
+
+    @Test fun realChunkedGzipAndSplitUtf8KeepTheCompleteTranslation() {
+        exchange(gzip = true, send = { socket, body ->
+            for (part in body.asList().chunked(3)) chunk(socket, part.toByteArray())
+            socket.getOutputStream().write("0\r\n\r\n".toByteArray())
+        }) { engine, calls ->
+            assertEquals("完整译文😀。", engine.translate(request).single().text)
+            assertEquals(1, calls.get())
+        }
+    }
+
+    @Test fun completeJsonWithoutFinalChunkTrailerStillSucceeds() {
+        exchange(send = { socket, body -> chunk(socket, body) }) { engine, calls ->
+            assertEquals("完整译文😀。", engine.translate(request).single().text)
+            assertEquals(1, calls.get())
+        }
+    }
+
+    @Test fun http200ThenResetBeforeFirstChunkFailsOnceWithoutReplaying() {
+        exchange(send = { socket, _ -> Thread.sleep(40); socket.setSoLinger(true, 0) }) { engine, calls ->
+            assertThrows(IllegalStateException::class.java) { engine.translate(request) }
+            assertEquals(1, calls.get())
+            assertTrue(runtimeLogSnapshot().contains("API transport_failed stage=4 http_status=200"))
+        }
+    }
+
+    @Test fun resetDuringJsonCannotPublishPartialOutput() {
+        exchange(send = { socket, body -> chunk(socket, body.copyOf(body.size / 2)); Thread.sleep(40); socket.setSoLinger(true, 0) }) { engine, calls ->
+            assertThrows(IllegalStateException::class.java) { engine.translate(request) }
+            assertEquals(1, calls.get())
+        }
+    }
+}

@@ -11,9 +11,9 @@ if (!(Test-Path -LiteralPath $otherKey)) {
     if ($LASTEXITCODE -ne 0) { throw 'Test key generation failed' }
 }
 $variants = @(
-    @{Name='fixture'; Package='io.github.yomikomi'; Code=3; Version='0.1.2'; Key='debug'},
-    @{Name='wrong-signer'; Package='io.github.yomikomi'; Code=3; Version='0.1.2'; Key='other'},
-    @{Name='wrong-package'; Package='io.github.anotherapp'; Code=3; Version='0.1.2'; Key='debug'},
+    @{Name='fixture'; Package='io.github.yomikomi'; Code=4; Version='0.1.3'; Key='debug'},
+    @{Name='wrong-signer'; Package='io.github.yomikomi'; Code=4; Version='0.1.3'; Key='other'},
+    @{Name='wrong-package'; Package='io.github.anotherapp'; Code=4; Version='0.1.3'; Key='debug'},
     @{Name='old'; Package='io.github.yomikomi'; Code=1; Version='0.1.0'; Key='debug'}
 )
 foreach ($variant in $variants) {

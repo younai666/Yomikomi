@@ -71,7 +71,7 @@ class UpdateDeviceTest {
         val bytes = shellBytes("cat /data/local/tmp/yomikomi-update-fixture.apk")
         assertTrue(bytes.size > 100)
         val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        val releaseRow = row("v0.1.2").apply {
+        val releaseRow = row("v0.1.3").apply {
             getJSONArray("assets").getJSONObject(0).put("size", bytes.size).put("digest", "sha256:$hash")
         }
         val directory = File(context.cacheDir, "updates")
@@ -82,10 +82,10 @@ class UpdateDeviceTest {
             }
             waitUntil { AppUpdater.status.phase == UpdatePhase.Downloaded }
             assertArrayEquals(bytes, apk.readBytes())
-            ApkInstaller.verify(context, apk, AppVersion.parse("0.1.2")!!)
+            ApkInstaller.verify(context, apk, AppVersion.parse("0.1.3")!!)
             for (name in listOf("wrong-signer", "wrong-package", "old")) {
                 val bad = File(directory, "$name.apk").apply { writeBytes(shellBytes("cat /data/local/tmp/yomikomi-update-$name.apk")) }
-                try { assertThrows(UpdateException::class.java) { ApkInstaller.verify(context, bad, AppVersion.parse("0.1.2")!!) } }
+                try { assertThrows(UpdateException::class.java) { ApkInstaller.verify(context, bad, AppVersion.parse("0.1.3")!!) } }
                 finally { bad.delete() }
             }
             assertThrows(IllegalArgumentException::class.java) {
