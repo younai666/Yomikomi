@@ -17,9 +17,75 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CancellationException
 
 @RunWith(AndroidJUnit4::class)
 class OcrRegionsDeviceTest {
+    @Test fun cancellationStopsBetweenRegionsReleasesNativePageAndPreservesTheCallersBitmap() {
+        AppRuntime.worker.submit {
+            val image = Bitmap.createBitmap(1080, 1200, Bitmap.Config.ARGB_8888)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 42f }
+            Canvas(image).apply {
+                drawColor(Color.WHITE)
+                drawText("First readable line.", 100f, 180f, paint)
+                drawText("Second readable line.", 100f, 380f, paint)
+                drawText("Third readable line.", 100f, 580f, paint)
+            }
+            try {
+                val area = Rect(0, 0, image.width, image.height)
+                val failuresBefore = Regex("ERROR OCR recognize.failed").findAll(runtimeLogSnapshot()).count()
+                var checks = 0
+                assertThrows(CancellationException::class.java) {
+                    AppRuntime.ocr.recognize(image, "英语", area, 1300) { ++checks >= 4 }
+                }
+                assertFalse(image.isRecycled)
+                val log = runtimeLogSnapshot()
+                assertTrue(log.contains("OCR cancelled request=1300 stage=2 completed=1 total=3"))
+                assertTrue(log.contains("INFO OCR recognize.cancelled"))
+                assertEquals(failuresBefore, Regex("ERROR OCR recognize.failed").findAll(log).count())
+                // Successful reuse proves that cancelled page/iterator ownership was released on the worker.
+                val recovered = AppRuntime.ocr.recognize(image, "英语", area, 1301)
+                assertTrue(recovered.joinToString(" ") { it.text }.contains("Second readable"))
+                assertTrue(recovered.all { it.bounds.left >= area.left && it.bounds.top >= area.top &&
+                    it.bounds.right <= area.right && it.bounds.bottom <= area.bottom })
+            } finally { image.recycle() }
+        }.get(30, TimeUnit.SECONDS)
+    }
+
+    @Test fun alreadyCancelledOcrDoesNotEvenInitializeTheLanguageOrTouchTheBitmap() {
+        AppRuntime.worker.submit {
+            val image = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+            try {
+                // An unsupported language would fail initialization if cancellation were checked too late.
+                assertThrows(CancellationException::class.java) {
+                    AppRuntime.ocr.recognize(image, "not-a-language", Rect(0, 0, 100, 100), 1302) { true }
+                }
+                assertFalse(image.isRecycled)
+            } finally { image.recycle() }
+        }.get(10, TimeUnit.SECONDS)
+    }
+
+    @Test fun smallUiLabelsSurviveBesideLargeHeadingsUsingRealOcr() {
+        AppRuntime.worker.submit {
+            val image = Bitmap.createBitmap(1080, 1200, Bitmap.Config.ARGB_8888)
+            try {
+                val canvas = Canvas(image)
+                canvas.drawColor(Color.WHITE)
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 90f }
+                listOf("Large title", "Second title", "Third title").forEachIndexed { index, text ->
+                    canvas.drawText(text, 100f, 200f + index * 200, paint)
+                }
+                paint.textSize = 30f
+                canvas.drawText("OK", 100f, 900f, paint)
+                val result = AppRuntime.ocr.recognize(image, "英语", Rect(0, 100, 1080, 1100), 1303)
+                assertTrue(result.any { it.text.contains("Large title") })
+                val small = result.single { it.text == "OK" }
+                assertTrue(small.bounds.top in 850..900)
+                assertTrue(small.bounds.height < result.filter { it.text.contains("title") }.minOf { it.bounds.height } / 2)
+            } finally { image.recycle() }
+        }.get(30, TimeUnit.SECONDS)
+    }
+
     @Test fun emptyAndOnlyMicroTextPagesHaveNoRecognitionRegions() {
         AppRuntime.worker.submit {
             val image = Bitmap.createBitmap(1080, 2340, Bitmap.Config.ARGB_8888)

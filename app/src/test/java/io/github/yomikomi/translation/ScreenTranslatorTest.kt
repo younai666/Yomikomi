@@ -63,6 +63,29 @@ class ScreenTranslatorTest {
         assertNull(request!!.previousScreen)
     }
 
+    @Test fun contextBudgetKeepsTheLatestDialogueAsAContiguousSuffixInReadingOrder() {
+        var request: TranslationRequest? = null
+        val translator = ScreenTranslator { r -> request = r; r.segments }
+        val input = (0..4).map { block("Dialogue $it " + "x".repeat(490), 10, it * 50) }
+        val page = translator.translate(input, "英语", "中文", "reader", 0)
+        assertTrue(translator.accept(page, "reader", 0))
+        translator.translate(input, "英语", "中文", "reader", 10)
+        val previous = request!!.previousScreen!!
+        assertEquals(page.blocks.takeLast(2).map { it.id }, previous.segments.map { it.id })
+        assertEquals(previous.segments.map { it.id }, previous.translations.map { it.id })
+        assertTrue((previous.segments + previous.translations).sumOf { it.text.length } <= ScreenTranslator.CONTEXT_CHARS)
+    }
+
+    @Test fun oversizedRecentDialogueDoesNotPullInUnrelatedOlderFragmentsAcrossTheBudgetGap() {
+        var request: TranslationRequest? = null
+        val translator = ScreenTranslator { r -> request = r; r.segments }
+        val input = listOf(block("Earlier short reply", 10, 10), block("Recent " + "x".repeat(1300), 10, 80))
+        val page = translator.translate(input, "英语", "中文", "reader", 0)
+        assertTrue(translator.accept(page, "reader", 0))
+        translator.translate(input, "英语", "中文", "reader", 10)
+        assertNull(request!!.previousScreen)
+    }
+
     @Test fun rejectsMissingDuplicateUnknownAndEmptyTranslations() {
         val input = listOf(block("a", 0, 0), block("b", 0, 50))
         val invalid: List<(TranslationRequest) -> List<TranslationSegment>> = listOf(

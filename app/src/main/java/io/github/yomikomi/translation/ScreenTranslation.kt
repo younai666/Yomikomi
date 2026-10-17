@@ -87,12 +87,13 @@ class ScreenTranslator(private val engine: TranslationEngine) {
             }
             val context = previous?.let { page ->
                 var remaining = CONTEXT_CHARS
-                val kept = page.blocks.mapNotNull { block ->
+                // The next page follows the last dialogue, so retain a contiguous suffix in reading order.
+                val kept = page.blocks.takeLastWhile { block ->
                     val translated = page.translations.getValue(block.id)
                     val size = block.text.length + translated.length
-                    if (size > remaining) null else {
+                    if (size > remaining) false else {
                         remaining -= size
-                        block
+                        true
                     }
                 }
                 if (kept.isEmpty()) null else PreviousScreen(kept.map { TranslationSegment(it.id, it.text) },

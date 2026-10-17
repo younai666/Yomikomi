@@ -178,7 +178,9 @@ class ScreenCaptureService : AccessibilityService() {
                             check(bitmap.width == bounds.width() && bitmap.height == bounds.height()) { "屏幕方向已变化，请重试" }
                             AppRuntime.ensureLoaded(ModelCatalog.ocr, config.source)
                             phase(token, "识别中", 3)
-                            blocks = AppRuntime.ocr.recognize(bitmap, config.source, area, if (config.api.enabled) token else 0, apiKey)
+                            blocks = AppRuntime.ocr.recognize(bitmap, config.source, area, if (config.api.enabled) token else 0, apiKey) {
+                                token != generation.get()
+                            }
                             if (blocks.isEmpty()) translator.clear(ContextReset.EMPTY)
                             check(blocks.isNotEmpty()) { "未识别到文字" }
                             appearance = screenAppearance(bitmap, area, blocks)
@@ -194,7 +196,7 @@ class ScreenCaptureService : AccessibilityService() {
                             AppRuntime.ensureLoaded(ModelCatalog.translation, gpuAcceleration = config.gpuAcceleration)
                         }
                         if (token != generation.get()) return@execute
-                        activeEngine = if (config.api.enabled) ApiTranslationEngine(config.api, { apiKey })
+                        activeEngine = if (config.api.enabled) ApiTranslationEngine(config.api, { apiKey }, networkContext = applicationContext)
                             else HyMtTranslationEngine()
                         if (token != generation.get()) return@execute
                         phase(token, "翻译中", 5)

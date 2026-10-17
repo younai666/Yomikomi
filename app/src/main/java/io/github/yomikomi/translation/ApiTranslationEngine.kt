@@ -1,5 +1,6 @@
 package io.github.yomikomi.translation
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -7,14 +8,12 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
 import okhttp3.Call
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
 import okhttp3.Protocol
 import okhttp3.MediaType.Companion.toMediaType
 import okio.BufferedSink
-import java.util.concurrent.TimeUnit
 
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -25,15 +24,10 @@ import java.nio.charset.CodingErrorAction
 import io.github.yomikomi.logging.LogModule
 import io.github.yomikomi.logging.RunLog
 
-internal val apiHttpClient by lazy {
-    OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(90, TimeUnit.SECONDS).retryOnConnectionFailure(false)
-        .followRedirects(false).followSslRedirects(false).build()
-}
-
 class ApiTranslationEngine(
     private val config: ApiSettings,
     private val secret: () -> String,
+    private val networkContext: Context? = null,
     private val open: (URL) -> Call.Factory = { apiHttpClient },
 ) : TranslationEngine {
     private val maxOutputTokens = 4096
@@ -59,7 +53,8 @@ class ApiTranslationEngine(
                 .put(JSONObject().put("role", "user").put("content", prompt)))
         if (config.provider == ApiProvider.DeepSeek) body.put("thinking", JSONObject().put("type", "disabled"))
         val payload = body.toString().toByteArray(Charsets.UTF_8)
-        val post = Request.Builder().url(url).header("Authorization", "Bearer $key")
+        val post = Request.Builder().url(url).tag(ApiTraceId::class.java, ApiTraceId(request.traceId, networkContext?.applicationContext))
+            .header("Authorization", "Bearer $key")
             .header("Accept", "application/json").header("Accept-Encoding", "identity")
             .post(object : RequestBody() {
                 override fun contentType() = "application/json; charset=utf-8".toMediaType()
@@ -116,14 +111,18 @@ class ApiTranslationEngine(
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int = wire.read(buffer, offset, length).also(::count)
                 override fun close() = wire.close()
             }
+            var readComplete = false
+            var input: InputStream = counted
             val responseText = try {
                 stage = 3
-                val input = if (gzip) GZIPInputStream(counted) else counted
+                if (gzip) input = GZIPInputStream(counted)
                 stage = 4
-                readResponse(input, request.traceId, key) { receivedBytes = it }
+                readResponse(input, request.traceId, key) { receivedBytes = it }.also { readComplete = true }
             }
             finally {
-                try { counted.close() } catch (error: IOException) {
+                RunLog.info(LogModule.API, "body_close", "request" to request.traceId, "bytes" to receivedBytes,
+                    "read_complete" to if (readComplete) 1 else 0)
+                try { input.close() } catch (error: IOException) {
                     RunLog.warn(LogModule.API, "body_close_failed", error, "bytes" to receivedBytes)
                 }
             }
@@ -161,6 +160,7 @@ class ApiTranslationEngine(
                 "request" to request.traceId, "bytes" to receivedBytes, "wire_bytes" to wireBytes,
                 "first_byte_ms" to if (firstByteAt == 0L) -1L else (firstByteAt - requestStarted) / 1_000_000,
                 "cancelled" to if (canceled.get()) 1 else 0,
+                "call_cancelled" to if (conn.isCanceled()) 1 else 0, "kind" to apiFailureKind(error),
                 "elapsed_ms" to if (bodyStarted == 0L) 0L else RunLog.elapsed(bodyStarted))
             throw IllegalStateException(when {
                 canceled.get() -> "已取消"
@@ -175,6 +175,8 @@ class ApiTranslationEngine(
                 "stage" to stage, "http_status" to status, "wire_bytes" to wireBytes, "body_bytes" to receivedBytes,
                 "first_byte_ms" to if (firstByteAt == 0L) -1L else (firstByteAt - requestStarted) / 1_000_000,
                 "elapsed_ms" to RunLog.elapsed(requestStarted))
+            RunLog.info(LogModule.API, "response_close", "request" to request.traceId, "stage" to stage,
+                "success" to if (succeeded) 1 else 0)
             try { httpResponse?.close() } catch (error: IOException) { RunLog.warn(LogModule.API, "response_close_failed", error) }
             connection = null
         }

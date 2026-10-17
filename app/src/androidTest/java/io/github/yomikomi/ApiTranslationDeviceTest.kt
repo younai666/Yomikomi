@@ -37,7 +37,7 @@ class ApiTranslationDeviceTest {
     @Test fun longResponsesPreserveEveryCharacterAndIdAcrossReadBoundaries() {
         val long = "人名Нейромиту、否定条件、引号\"与括号{原样}😀，不要省略。".repeat(240) + "【最后一个字】"
         val conn = FakeConnection(response("[b7] → $long\n[b12] → 完整的第二个ID。"))
-        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
         assertEquals(long, result.first().text)
         assertEquals("完整的第二个ID。", result.last().text)
         assertEquals(segments.map { it.id }, result.map { it.id })
@@ -48,12 +48,12 @@ class ApiTranslationDeviceTest {
         val body = JSONObject(response("[b7] → 看似完整\n[b12] → 实际被截断", "length"))
             .put("usage", JSONObject().put("prompt_tokens", 1800).put("completion_tokens", 4096)).toString()
         val failure = assertThrows(IllegalStateException::class.java) {
-            ApiTranslationEngine(ApiSettings(), { "test-key" }, { FakeConnection(body) }).translate(request())
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { FakeConnection(body) }).translate(request())
         }
         assertTrue(failure.message.orEmpty().contains("token 上限"))
         assertTrue(runtimeLogSnapshot().contains("finish=1 prompt_tokens=1800 output_tokens=4096 max_output_tokens=4096"))
         assertThrows(IllegalArgumentException::class.java) {
-            ApiTranslationEngine(ApiSettings(), { "test-key" }, { FakeConnection(response("[b7] → 缺少第二个ID")) }).translate(request())
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { FakeConnection(response("[b7] → 缺少第二个ID")) }).translate(request())
         }
         assertTrue(runtimeLogSnapshot().contains("API protocol_failed request=0 expected_ids=2 lines=1"))
     }
@@ -64,7 +64,7 @@ class ApiTranslationDeviceTest {
             val config = ApiSettings(enabled = true, prompt = PromptSettings(mode, custom))
             val conn = FakeConnection(response("[b7] → 爱丽丝拿起了霜华。\n[b12] → 她说：我们走吧。"))
             var opens = 0
-            val result = ApiTranslationEngine(config, { "test-key" }, { opens++; conn }).translate(request(config.prompt))
+            val result = ApiTranslationEngine(config, { "test-key" }, open = { opens++; conn }).translate(request(config.prompt))
             assertEquals(1, opens)
             assertEquals(segments.map { it.id }, result.map { it.id })
             assertEquals("POST", conn.requestMethod)
@@ -88,7 +88,7 @@ class ApiTranslationDeviceTest {
             assertTrue(conn.disconnected)
         }
         val conn = FakeConnection(response("[b7] → 爱丽丝拿起了霜华。\n[b12] → 她说：我们走吧。"))
-        ApiTranslationEngine(ApiSettings(provider = ApiProvider.OpenAiCompatible), { "test-key" }, { conn }).translate(request())
+        ApiTranslationEngine(ApiSettings(provider = ApiProvider.OpenAiCompatible), { "test-key" }, open = { conn }).translate(request())
         assertFalse(JSONObject(conn.sent.toString("UTF-8")).has("thinking"))
     }
 
@@ -96,14 +96,14 @@ class ApiTranslationDeviceTest {
         listOf(302, 401, 402, 404, 429, 503).forEach { status ->
             val conn = FakeConnection("secret-or-screen-text-must-not-leak", status)
             val failure = assertThrows(IllegalStateException::class.java) {
-                ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+                ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
             }
             assertFalse(failure.message.orEmpty().contains("must-not-leak"))
             assertTrue(conn.disconnected)
         }
         listOf(response("[b7] → 截断", "length"), "not JSON", response("[b12] → 二\n[b7] → 一"),
             response("[b7] → 一\n[b12] → 二\n[b99] → 上屏"), response("[b7] → 一\n[b12] → 二 [b99] → 上屏")).forEach { body ->
-            assertThrows(Exception::class.java) { ApiTranslationEngine(ApiSettings(), { "test-key" }, { FakeConnection(body) }).translate(request()) }
+            assertThrows(Exception::class.java) { ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { FakeConnection(body) }).translate(request()) }
         }
     }
 
@@ -115,11 +115,11 @@ class ApiTranslationDeviceTest {
                 throw IOException("closed")
             }
         }
-        engine = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn })
+        engine = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn })
         assertEquals("已取消", assertThrows(IllegalStateException::class.java) { engine.translate(request()) }.message)
         assertTrue(conn.disconnected)
         var opened = false
-        val canceled = ApiTranslationEngine(ApiSettings(), { "test-key" }, { opened = true; conn })
+        val canceled = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { opened = true; conn })
         canceled.cancel()
         assertThrows(IllegalStateException::class.java) { canceled.translate(request()) }
         assertFalse(opened)
@@ -145,7 +145,7 @@ class ApiTranslationDeviceTest {
                 override fun close() { throw SocketException("close after complete body") }
             }
         }
-        val translated = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        val translated = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
         assertEquals(text.substringBefore('\n').substringAfter(" → "), translated.first().text)
         assertEquals((bytes.size + 2) / 3, reads)
         assertNull(conn.getRequestProperty("Connection"))
@@ -168,7 +168,7 @@ class ApiTranslationDeviceTest {
             }
         }
         val error = assertThrows(IllegalStateException::class.java) {
-            ApiTranslationEngine(ApiSettings(), { "test-key" }, { opens++; conn }).translate(request())
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { opens++; conn }).translate(request())
         }
         assertEquals("API 响应读取中断，请重试", error.message)
         assertEquals(1, opens)
@@ -192,7 +192,7 @@ class ApiTranslationDeviceTest {
                 override fun read(bytes: ByteArray, offset: Int, length: Int) = super.read(bytes, offset, minOf(length, 3))
             }
         }
-        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
         assertTrue(result.first().text.contains("霜华"))
         assertEquals("identity", conn.getRequestProperty("Accept-Encoding"))
         val log = runtimeLogSnapshot()
@@ -210,9 +210,26 @@ class ApiTranslationDeviceTest {
             }
         }
         assertThrows(IllegalStateException::class.java) {
-            ApiTranslationEngine(ApiSettings(), { "test-key" }, { conn }).translate(request())
+            ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
         }
         assertTrue(runtimeLogSnapshot().contains("API transport_failed stage=3 http_status=200"))
+    }
+
+    @Test fun completedGzipTranslationSurvivesDecoderCloseFailure() {
+        val encoded = ByteArrayOutputStream().apply {
+            GZIPOutputStream(this).use { it.write(response("[b7] → 第一段完整译文。\n[b12] → 第二段完整译文。").toByteArray()) }
+        }.toByteArray()
+        val conn = object : FakeConnection("") {
+            override fun getHeaderField(name: String) = if (name == "Content-Encoding") "gzip" else null
+            override fun getInputStream() = object : ByteArrayInputStream(encoded) {
+                override fun close() { throw SocketException("private endpoint must not leak") }
+            }
+        }
+        val result = ApiTranslationEngine(ApiSettings(), { "test-key" }, open = { conn }).translate(request())
+        assertEquals(listOf("第一段完整译文。", "第二段完整译文。"), result.map { it.text })
+        val log = runtimeLogSnapshot()
+        assertTrue(log.contains("API body_close_failed"))
+        assertFalse(log.contains("private endpoint must not leak"))
     }
 
     @Test fun keyIsEncryptedOriginBoundAndApiSettingsPersistIndependently() {

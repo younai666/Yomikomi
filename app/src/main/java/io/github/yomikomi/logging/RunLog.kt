@@ -3,6 +3,7 @@ package io.github.yomikomi.logging
 import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CancellationException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -56,6 +57,9 @@ object RunLog {
         info(module, "$event.started", *metrics)
         try {
             return block().also { info(module, "$event.done", *metrics, "elapsed_ms" to elapsed(started)) }
+        } catch (error: CancellationException) {
+            info(module, "$event.cancelled", *metrics, "elapsed_ms" to elapsed(started))
+            throw error
         } catch (error: Throwable) {
             error(module, "$event.failed", error, *metrics, "elapsed_ms" to elapsed(started))
             throw error
